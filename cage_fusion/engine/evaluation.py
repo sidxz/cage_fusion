@@ -26,29 +26,35 @@ def evaluate_model(
     tokenizer_obj=None,
 ):
     """
-    Evaluate the model using streaming aggregators for metrics to minimize memory usage.
+    Evaluates the model using batched metrics aggregation with minimal memory overhead.
 
     Args:
-        model: The trained model.
-        loader: Validation or test DataLoader.
-        criterion: Loss function.
-        device: torch.device (e.g., cuda or cpu).
-        num_tasks: Number of binary classification tasks.
-        label_names: List of task names.
-        threshold_search: Threshold values to test for MCC computation.
-        return_thresholds: If True, return per-task thresholds and metrics.
-        plot_attn: If True, generate attention weight visualization.
-        cache_dir: Directory to store temporary evaluation data.
-        tokenizer_obj: HuggingFace tokenizer object for attention plotting.
+        model (nn.Module): Trained model instance.
+        loader (DataLoader): DataLoader for validation or test data.
+        criterion (callable): Loss function.
+        device (torch.device): Target computation device (CPU/GPU).
+        num_tasks (int): Number of classification tasks.
+        label_names (List[str]): Task names for logging and plotting.
+        threshold_search (np.ndarray): Thresholds for MCC evaluation.
+        return_thresholds (bool): Whether to return optimal per-task thresholds.
+        plot_attn (bool): Whether to plot attention maps for the first batch.
+        cache_dir (str): Path to store cached predictions and plots.
+        tokenizer_obj (PreTrainedTokenizer): Tokenizer for attention plots.
 
     Returns:
-        Tuple containing average loss, MCC, AUC, PR-AUC, thresholds, and per-task metrics.
+        Tuple:
+            - avg_loss (float): Average evaluation loss.
+            - avg_mcc (float): Average Matthews correlation coefficient.
+            - avg_auc (float): Average AUC score.
+            - avg_pr (float): Average Precision-Recall AUC.
+            - best_thresholds (np.ndarray): Optimal thresholds per task.
+            - per_task_metrics (List[Tuple[float]]): MCC, AUC, PR per task.
     """
     model.eval()
     total_loss = 0.0
     has_plotted = False
 
-    # Initialize metric aggregators
+    # Initialize disk-backed metric aggregators
     mcc_agg = MCCBatchAggregatorToDisk(
         num_tasks, cache_dir=os.path.join(cache_dir, "mcc"), label_names=label_names
     )
@@ -62,16 +68,17 @@ def evaluate_model(
     for batch in tqdm(loader, desc="Evaluating"):
         bmg, token_embs, attn_mask, rdkit_feats, labels, input_ids_batch = batch
 
-        # Move batch to device
+        # Transfer tensors to device
         bmg = move_bmg_to_device(bmg, device)
         token_embs = token_embs.to(device)
         attn_mask = attn_mask.to(device)
         rdkit_feats = rdkit_feats.to(device)
         labels = labels.to(device)
         input_ids_batch = input_ids_batch.to(device)
+
         return_attn = plot_attn and not has_plotted
 
-        # Forward pass
+        # Model inference
         outputs = model(
             bmg,
             token_embs,
@@ -108,7 +115,7 @@ def evaluate_model(
         auc_agg.update(labels, probs)
         pr_agg.update(labels, probs)
 
-    # Final metrics
+    # Final aggregation of metrics
     avg_loss = total_loss / len(loader)
     avg_mcc, best_thresholds, per_task_mcc = mcc_agg.compute(
         threshold_search=threshold_search
@@ -120,9 +127,7 @@ def evaluate_model(
     avg_pr = float(np.mean(per_task_pr))
     per_task_metrics = list(zip(per_task_mcc, per_task_auc, per_task_pr))
 
-    # logger.info(
-    #     f"Evaluation complete: loss={avg_loss:.4f} | MCC={avg_mcc:.4f} | AUC={avg_auc:.4f} | PR-AUC={avg_pr:.4f}"
-    # )
+    # logger.info(f"Evaluation complete: loss={avg_loss:.4f} | MCC={avg_mcc:.4f} | AUC={avg_auc:.4f} | PR-AUC={avg_pr:.4f}")
 
     if return_thresholds:
         return (

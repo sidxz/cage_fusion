@@ -1,41 +1,57 @@
 import torch
 
 def get_default_config():
-    """Returns the default hyperparameter configuration for the CAGEFusionModel."""
+    """
+    Returns the default hyperparameter configuration for the CAGEFusionModel.
+
+    This configuration includes:
+    - Model architecture hyperparameters
+    - Training setup details
+    - Regularization parameters
+    - Tokenizer and data processing settings
+    - Device allocation logic based on CUDA availability
+    """
+    try:
+        device_type = "cuda" if torch.cuda.is_available() else "cpu"
+    except Exception as e:
+        # Fallback to CPU in case of unexpected error when checking CUDA
+        device_type = "cpu"
+
     config = {
-        # Model hyperparameters
-        "graph_dim": 300,
-        "embedding_dim": 768,
-        "aux_feature_dim": 217,
-        "num_tasks": 6,
-        "num_heads": 8,
-        "cross_attn_dropout": 0.2,
-        "proj_dropout": 0.1,
-        "use_atom_level_queries": True,
-        "use_advanced_features": True,
+        # === Model Hyperparameters ===
+        "graph_dim": 300,                     # Dimension of graph features
+        "embedding_dim": 768,                # Token embedding size
+        "aux_feature_dim": 217,              # Dimension of auxiliary features
+        "num_tasks": 6,                      # Number of prediction tasks
+        "num_heads": 8,                      # Number of attention heads
+        "cross_attn_dropout": 0.2,           # Dropout rate in cross-attention
+        "proj_dropout": 0.1,                 # Dropout rate in projection layers
+        "use_atom_level_queries": True,      # Enable atom-level querying
+        "use_advanced_features": True,       # Include additional advanced features
 
-        # Training hyperparameters
-        "learning_rate": 3e-4,
-        "num_epochs": 50,
-        "batch_size": 192,
-        "warmup_fraction": 0.2,
-        "clip_grad_norm": 1.0,
+        # === Training Hyperparameters ===
+        "learning_rate": 3e-4,               # Learning rate for the optimizer
+        "num_epochs": 50,                    # Total number of training epochs
+        "batch_size": 192,                   # Number of samples per batch
+        "warmup_fraction": 0.2,              # Warmup steps as a fraction of total steps
+        "clip_grad_norm": 1.0,               # Gradient clipping to prevent exploding gradients
 
-        # Regularization hyperparameters for the attention mechanism
-        "lambda_entropy": 0.001,  # Encourages the model to spread its attention
-        "lambda_prior": 0.01,     # Guides attention using pre-computed token importance
+        # === Attention Regularization ===
+        "lambda_entropy": 0.001,             # Entropy loss weight for attention sparsity
+        "lambda_prior": 0.01,                # Prior loss weight using token importance
 
-        # Data processing
-        "max_seq_len": 512,
-        "neg_to_pos_ratio": 3,
-        
-        # Tokenizer settings
-        "model_checkpoint": "unikei/bert-base-smiles",
-        
-        # Device
-        "device": "cuda" if torch.cuda.is_available() else "cpu",
+        # === Data Processing Settings ===
+        "max_seq_len": 512,                  # Maximum sequence length for token inputs
+        "neg_to_pos_ratio": 3,               # Ratio of negative to positive samples in training
 
-        # Optional: Path to a pre-computed token importance tensor
-        "token_importance_prior": None,
+        # === Tokenizer & Model Checkpoint ===
+        "model_checkpoint": "unikei/bert-base-smiles",  # Pretrained tokenizer/model checkpoint
+
+        # === Execution Device ===
+        "device": device_type,               # Automatically assigned device based on CUDA availability
+
+        # === Optional Settings ===
+        "token_importance_prior": None       # Path to pre-computed token importance (optional)
     }
+
     return config
