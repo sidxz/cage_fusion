@@ -5,44 +5,52 @@ import threading
 import numpy as np
 from collections import OrderedDict
 from torch.utils.data import Dataset
+from cage_fusion.utils.logging_utils import logger
 
-# A thread-local cache for HDF5 file handles to avoid issues with multiprocessing
+# Thread-local cache to manage HDF5 handles in multiprocessing workers
 _worker_cache = threading.local()
 
 class CageFusionStreamingDataset(Dataset):
     """
-    A PyTorch Dataset for streaming data from HDF5 and graph feature files.
-    
-    This dataset is optimized for use with multiprocessing in PyTorch DataLoaders
-    by opening a file handle for the HDF5 file on each worker process.
+    Streams embeddings, auxiliary features, and labels from HDF5 along with graph features.
+
+    This dataset is multiprocessing-safe by assigning a dedicated HDF5 handle to each worker.
     """
     def __init__(self, h5_path: str, graph_path: str, tokenizer_pad_id: int = 0):
         self.h5_path = h5_path
-        self.graphs = joblib.load(graph_path)
         self.pad_token_id = tokenizer_pad_id
 
+        # Load graph features from joblib
+        try:
+            self.graphs = joblib.load(graph_path)
+        except Exception as e:
+            raise RuntimeError(f"Failed to load graph features from {graph_path}: {e}")
+
         with h5py.File(h5_path, "r") as f:
-            self.length = f["labels"].shape[0]
             if "input_ids" not in f:
-                raise KeyError(f"Dataset 'input_ids' not found in HDF5 file: {h5_path}. "
-                               "Please ensure featurization saves this dataset.")
+                raise KeyError(
+                    f"Dataset 'input_ids' not found in HDF5 file: {h5_path}. "
+                    "Ensure featurization stores 'input_ids'."
+                )
+            self.length = f["labels"].shape[0]
 
-        assert self.length == len(self.graphs), "❌ Mismatch between graph and HDF5 length."
+        if self.length != len(self.graphs):
+            logger.error("Mismatch between HDF5 (%d) and graph features (%d)", self.length, len(self.graphs))
+            raise ValueError("Graph feature count does not match HDF5 samples.")
 
-    def __len__(self):
+    def __len__(self) -> int:
         return self.length
 
     def _get_h5_file_handle(self):
-        """Opens and caches a file handle for the HDF5 file on the current worker."""
+        """Returns a cached HDF5 file handle per worker."""
         if not hasattr(_worker_cache, "h5_file"):
             _worker_cache.h5_file = h5py.File(self.h5_path, "r")
         return _worker_cache.h5_file
 
-    def __getitem__(self, idx):
+    def __getitem__(self, idx: int) -> tuple:
         h5 = self._get_h5_file_handle()
         graph = self.graphs[idx]
 
-        # Retrieve data from HDF5 and convert to tensors
         embedding = torch.tensor(h5["embedding"][idx], dtype=torch.float32)
         aux_features = torch.tensor(h5["auxiliary_features_normalized"][idx], dtype=torch.float32)
         label = torch.tensor(h5["labels"][idx], dtype=torch.float32)
@@ -50,21 +58,25 @@ class CageFusionStreamingDataset(Dataset):
 
         return graph, embedding, aux_features, label, input_ids
 
+    def __del__(self):
+        if hasattr(_worker_cache, "h5_file"):
+            _worker_cache.h5_file.close()
+            del _worker_cache.h5_file
+
 
 class MiniBatchCacheDataset(Dataset):
     """
-    Wraps around an existing Dataset and caches recently used samples in RAM
-    using a Least Recently Used (LRU) eviction strategy.
+    Wraps a Dataset with an in-memory LRU cache to reduce disk I/O for recently used samples.
     """
     def __init__(self, dataset: Dataset, cache_size: int = 1024):
         self.dataset = dataset
         self.cache = OrderedDict()
         self.cache_size = cache_size
 
-    def __len__(self):
+    def __len__(self) -> int:
         return len(self.dataset)
 
-    def __getitem__(self, idx):
+    def __getitem__(self, idx: int):
         if idx in self.cache:
             self.cache.move_to_end(idx)
             return self.cache[idx]

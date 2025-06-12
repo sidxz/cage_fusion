@@ -1,8 +1,19 @@
-# cage_fusion/engine/__init__.py
+# Datasets
 from .dataset import CageFusionStreamingDataset, MiniBatchCacheDataset
-from .evaluation import evaluate_model
-from .logging import plot_training_history, log_epoch_results
-from .metrics import AUCBatchAggregatorToDisk, MCCBatchAggregatorToDisk, PRBatchAggregatorToDisk
+from .data_utils import collate_fn_for_cage_fusion
+
+# Training and evaluation core
 from .training import train_model
 from .train_epoch import train_one_epoch
-from .utils import collate_fn_for_cage_fusion, move_bmg_to_device, visualize_attention_weights
+from .evaluation import evaluate_model
+
+# Metrics and analysis
+from .metrics import (
+    AUCBatchAggregatorToDisk,
+    MCCBatchAggregatorToDisk,
+    PRBatchAggregatorToDisk,
+)
+
+# Logging and utilities
+from .logging import plot_training_history, log_epoch_results
+from .utils import move_bmg_to_device, visualize_attention_weights
