@@ -8,6 +8,7 @@ from chemprop.nn.predictors import BinaryClassificationFFN
 from chemprop.models.model import MPNN
 from torch.nn.utils.rnn import pad_sequence
 from cage_fusion.utils.logging_utils import logger
+import json
 
 
 class CAGEFusionModel(nn.Module):
@@ -17,7 +18,26 @@ class CAGEFusionModel(nn.Module):
 
     def __init__(self, config):
         super().__init__()
-        logger.info("Initializing CAGEFusionModel with config: {}", config)
+
+        # CORRECTED: Create a serializable version of the config for logging
+        def make_serializable(obj):
+            if isinstance(obj, torch.Tensor):
+                return f"<Tensor shape={obj.shape} device={obj.device}>"
+            if isinstance(obj, list):
+                return [make_serializable(item) for item in obj]
+            if isinstance(obj, dict):
+                return {k: make_serializable(v) for k, v in obj.items()}
+            return obj
+
+        serializable_config = make_serializable(config)
+        logger.debug(
+            "Initializing CAGEFusionModel with config:\n%s",
+            json.dumps(serializable_config, indent=2),
+        )
+
+        assert (
+            isinstance(config, dict) and len(config) > 0
+        ), "[XXXXX] Received empty config in model init!"
 
         # Save shapes and hyperparameters
         self.config = config

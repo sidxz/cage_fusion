@@ -26,7 +26,7 @@ from .helpers import (
 def clean_descriptors(x: np.ndarray) -> np.ndarray:
     """Sanitize and clip descriptor values."""
     if np.isnan(x).any() or np.isinf(x).any():
-        logger.warning("NaN or Inf found in auxiliary descriptors")
+        # logger.warning("NaN or Inf found in auxiliary descriptors")
         x = np.nan_to_num(x, nan=0.0, posinf=1e4, neginf=-1e4)
     return np.clip(x, -1e4, 1e4)
 

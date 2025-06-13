@@ -14,36 +14,19 @@ def train_model(
     criterion,
     scheduler,
     device,
-    num_epochs=50,
-    num_tasks=6,
-    base_cache_dir="metric_cache",
+    config,  # Pass the full config dictionary
     label_names=None,
     tokenizer_obj=None,
-    lambda_entropy=0.0,
-    lambda_prior=0.01,
 ):
     """
     Full training loop with checkpointing, evaluation, and visual logging.
-
-    Args:
-        model (torch.nn.Module): The model to train.
-        train_loader (DataLoader): Training data loader.
-        val_loader (DataLoader): Validation data loader.
-        optimizer (torch.optim.Optimizer): Optimizer.
-        criterion (callable): Loss function.
-        scheduler (torch.optim.lr_scheduler): Scheduler.
-        device (torch.device): CPU or CUDA device.
-        num_epochs (int): Number of training epochs.
-        num_tasks (int): Number of prediction tasks.
-        base_cache_dir (str): Directory for metrics, checkpoints, and logs.
-        label_names (List[str]): Optional task labels for visualization.
-        tokenizer_obj (PreTrainedTokenizer): Tokenizer for attention plots.
-        lambda_entropy (float): Weight for attention entropy regularization.
-        lambda_prior (float): Weight for prior loss from token importance.
-
-    Returns:
-        dict: Training history containing loss and metric trends.
     """
+    base_cache_dir = config["base_cache_dir"]
+    num_epochs = config["num_epochs"]
+    num_tasks = config["num_tasks"]
+    lambda_entropy = config["lambda_entropy"]
+    lambda_prior = config["lambda_prior"]
+
     os.makedirs(base_cache_dir, exist_ok=True)
     checkpoint_path = os.path.join(base_cache_dir, "latest_checkpoint.pt")
     best_model_path = os.path.join(base_cache_dir, "best_model.pt")
@@ -53,22 +36,27 @@ def train_model(
     # Resume from checkpoint if available
     if os.path.exists(checkpoint_path):
         logger.info(f"Resuming training from checkpoint: {checkpoint_path}")
-        # CORRECTED: Added weights_only=False to allow loading of history dict
         checkpoint = torch.load(
             checkpoint_path, map_location=device, weights_only=False
         )
-        model.load_state_dict(checkpoint["model_state_dict"])
+        model.load_state_dict(checkpoint["model_state_dict"], strict=True)
+
         optimizer.load_state_dict(checkpoint["optimizer_state_dict"])
         scheduler.load_state_dict(checkpoint["scheduler_state_dict"])
         history = checkpoint["history"]
         best_val_auc = checkpoint.get("best_val_auc", -1.0)
         start_epoch = checkpoint["epoch"] + 1
 
-        # Ensure all keys exist
-        for key in ["scale_graph", "scale_attn", "scale_aux"]:
+        for key in [
+            "scale_graph",
+            "scale_attn",
+            "scale_aux",
+            "val_norm_graph",
+            "val_norm_attn",
+            "val_norm_aux",
+        ]:
             history.setdefault(key, [])
 
-        # Move optimizer tensors to correct device
         for state in optimizer.state.values():
             for k, v in state.items():
                 if isinstance(v, torch.Tensor):
@@ -88,6 +76,9 @@ def train_model(
             "scale_graph": [],
             "scale_attn": [],
             "scale_aux": [],
+            "val_norm_graph": [],
+            "val_norm_attn": [],
+            "val_norm_aux": [],
         }
 
     logger.info(f"Starting training from epoch {start_epoch} to {num_epochs}")
@@ -102,7 +93,6 @@ def train_model(
         train_cache = os.path.join(base_cache_dir, f"epoch_{epoch}_train")
         val_cache = os.path.join(base_cache_dir, f"epoch_{epoch}_val")
 
-        # --- Train ---
         train_loss, train_mcc, train_auc, train_pr = train_one_epoch(
             model=model,
             loader=train_loader,
@@ -113,14 +103,22 @@ def train_model(
             num_tasks=num_tasks,
             cache_dir=train_cache,
             tokenizer_obj=tokenizer_obj,
-            log_attn_random_batch=True,
             lambda_entropy=lambda_entropy,
             lambda_prior=lambda_prior,
             label_names=label_names,
         )
 
-        # --- Evaluate ---
-        val_loss, val_mcc, val_auc, val_pr, _, per_task_metrics = evaluate_model(
+        (
+            val_loss,
+            val_mcc,
+            val_auc,
+            val_pr,
+            best_thresholds,
+            per_task_metrics,
+            val_norm_graph,
+            val_norm_attn,
+            val_norm_aux,
+        ) = evaluate_model(
             model=model,
             loader=val_loader,
             criterion=criterion,
@@ -145,11 +143,12 @@ def train_model(
         history["scale_graph"].append(model.scale_graph.item())
         history["scale_attn"].append(model.scale_attn.item())
         history["scale_aux"].append(model.scale_aux.item())
+        history["val_norm_graph"].append(val_norm_graph)
+        history["val_norm_attn"].append(val_norm_attn)
+        history["val_norm_aux"].append(val_norm_aux)
 
-        # --- Log Results ---
         log_epoch_results(epoch, num_epochs, history, label_names, per_task_metrics)
 
-        # --- Save Checkpoint ---
         checkpoint_data = {
             "epoch": epoch,
             "model_state_dict": model.state_dict(),
@@ -157,19 +156,25 @@ def train_model(
             "scheduler_state_dict": scheduler.state_dict(),
             "history": history,
             "best_val_auc": best_val_auc,
+            "config": config,
+            "best_thresholds": best_thresholds,
         }
         torch.save(checkpoint_data, checkpoint_path)
         logger.debug(f"Checkpoint saved: {checkpoint_path}")
 
-        # Save best model
         if val_auc > best_val_auc:
             best_val_auc = val_auc
-            checkpoint_data["best_val_auc"] = best_val_auc
-            torch.save(checkpoint_data, best_model_path)
+            best_checkpoint_data = dict(checkpoint_data)  # shallow copy is OK here
+            best_checkpoint_data["best_val_auc"] = best_val_auc
+            best_checkpoint_data["config"] = dict(
+                config
+            ) 
+
+            torch.save(best_checkpoint_data, best_model_path)
             logger.info(
                 f"New best model saved at {best_model_path} with AUC: {best_val_auc:.4f}"
             )
 
     logger.info("Training completed.")
-    plot_training_history(history)
+    plot_training_history(history, output_dir=config["base_cache_dir"])
     return history

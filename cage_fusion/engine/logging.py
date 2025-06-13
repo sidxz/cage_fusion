@@ -1,98 +1,62 @@
 import numpy as np
 import matplotlib.pyplot as plt
 from cage_fusion.utils.logging_utils import logger
-
-
-def plot_training_history(history):
-    """
-    Generate a 3-panel plot showing model training history including:
-    - Training and validation loss
-    - AUC and MCC metrics
-    - Learned modality scalers (graph, attention, auxiliary)
-
-    Args:
-        history (dict): Dictionary containing lists of training statistics per epoch.
-    """
-    epochs = range(1, len(history["val_loss"]) + 1)
-    fig, (ax1, ax2, ax3) = plt.subplots(3, 1, figsize=(18, 20), sharex=True)
-    fig.suptitle("Model Training History", fontsize=20, weight="bold")
-
-    # --- Panel 1: Loss ---
-    ax1.plot(
-        epochs,
-        history["train_loss"],
-        "o--",
-        color="dodgerblue",
-        label="Train Loss",
-        lw=2,
-    )
-    ax1.plot(
-        epochs,
-        history["val_loss"],
-        "o-",
-        color="darkorange",
-        label="Validation Loss",
-        lw=2,
-    )
-    ax1.set_title("Training and Validation Loss", fontsize=16)
-    ax1.set_ylabel("Loss", fontsize=14)
-    ax1.legend(fontsize=12)
-    ax1.grid(True, linestyle="--", alpha=0.6)
-
-    # --- Panel 2: Metrics ---
-    ax2.plot(
-        epochs, history["val_auc"], "o-", color="green", label="Validation AUC", lw=2
-    )
-    ax2.plot(
-        epochs, history["val_mcc"], "o-", color="purple", label="Validation MCC", lw=2
-    )
-    ax2.set_title("Validation Performance Metrics", fontsize=16)
-    ax2.set_ylabel("Score", fontsize=14)
-    ax2.legend(fontsize=12)
-    ax2.grid(True, linestyle="--", alpha=0.6)
-    ax2.set_ylim(bottom=max(0, np.min(history["val_auc"] + history["val_mcc"]) - 0.1))
-
-    # --- Panel 3: Scalers ---
-    ax3.plot(
-        epochs, history["scale_graph"], "o-", color="crimson", label="Graph Scale", lw=2
-    )
-    ax3.plot(
-        epochs, history["scale_attn"], "o-", color="teal", label="Attention Scale", lw=2
-    )
-    ax3.plot(
-        epochs, history["scale_aux"], "o-", color="gold", label="Auxiliary Scale", lw=2
-    )
-    ax3.set_title("Learned Modality Importance Scalers", fontsize=16)
-    ax3.set_ylabel("Scaler Value", fontsize=14)
-    ax3.set_xlabel("Epoch", fontsize=14)
-    ax3.legend(fontsize=12)
-    ax3.grid(True, linestyle="--", alpha=0.6)
-
-    # Configure x-ticks
-    step = max(1, len(epochs) // 15)
-    plt.xticks(np.arange(1, len(epochs) + 1, step=step))
-
-    plt.tight_layout(rect=[0, 0, 1, 0.96])
-    plt.show()
-
-
-from cage_fusion.utils.logging_utils import logger
 from rich.console import Console
 from rich.table import Table
 
 console = Console()
 
 
+import matplotlib.pyplot as plt
+import pandas as pd
+import os
+
+def plot_training_history(history, output_dir=None):
+    """
+    Plot training and validation curves, and save training history as CSV.
+    
+    Args:
+        history (dict): Training history with keys like 'train_loss', 'val_loss', etc.
+        output_dir (str, optional): If provided, saves plots and CSV there.
+    """
+    if output_dir:
+        os.makedirs(output_dir, exist_ok=True)
+
+    metrics = [
+        ("loss", "train_loss", "val_loss"),
+        ("mcc", "train_mcc", "val_mcc"),
+        ("auc", "train_auc", "val_auc"),
+        ("pr", "train_pr", "val_pr"),
+    ]
+
+    for title, train_key, val_key in metrics:
+        plt.figure()
+        plt.plot(history[train_key], label="Train")
+        plt.plot(history[val_key], label="Validation")
+        plt.title(f"{title.upper()} over Epochs")
+        plt.xlabel("Epoch")
+        plt.ylabel(title.upper())
+        plt.legend()
+        plt.grid(True)
+        if output_dir:
+            plt.savefig(os.path.join(output_dir, f"{title}_curve.png"))
+        else:
+            plt.show()
+        plt.close()
+
+    # Save history to CSV
+    df = pd.DataFrame({k: v for k, v in history.items() if isinstance(v, list) or isinstance(v, float)})
+    if output_dir:
+        csv_path = os.path.join(output_dir, "training_history.csv")
+        df.to_csv(csv_path, index_label="epoch")
+        print(f"✅ Saved training history to {csv_path}")
+    else:
+        print(df.head())
+
+
 def log_epoch_results(epoch, num_epochs, history, label_names, per_task_metrics):
     """
     Logs training and validation statistics at each epoch using rich formatting.
-
-    Args:
-        epoch (int): Current epoch number.
-        num_epochs (int): Total number of epochs.
-        history (dict): Historical training data.
-        label_names (List[str]): List of task labels.
-        per_task_metrics (List[Tuple[float]]): Tuple of (MCC, AUC, PR) per task.
     """
 
     def get_colored_delta(current, history_list, is_loss=False):
@@ -164,13 +128,25 @@ def log_epoch_results(epoch, num_epochs, history, label_names, per_task_metrics)
 
     # --- Scalers ---
     scale_table = Table(title="Learned Modality Scalers", header_style="bold yellow")
-    scale_table.add_column("Scaler")
+    scale_table.add_column("Scaler", justify="left")
     scale_table.add_column("Value", justify="right")
-    scale_table.add_column("Δ", justify="right")
+    scale_table.add_column("Avg. Rep Norm", justify="right")
+    scale_table.add_column("Scaled Norm", justify="right")
+    scale_table.add_column("Δ (Value)", justify="right")
 
-    for scale_key in ["scale_graph", "scale_attn", "scale_aux"]:
+    for scale_key, norm_key in [
+        ("scale_graph", "val_norm_graph"),
+        ("scale_attn", "val_norm_attn"),
+        ("scale_aux", "val_norm_aux"),
+    ]:
         val = history[scale_key][-1]
+        norm = history.get(norm_key, [0])[-1]
+        scaled_norm = val * norm
         scale_table.add_row(
-            scale_key, f"{val:.4f}", get_colored_delta(val, history[scale_key])
+            scale_key,
+            f"{val:.4f}",
+            f"{norm:.4f}",
+            f"{scaled_norm:.4f}",
+            get_colored_delta(val, history[scale_key]),
         )
     console.print(scale_table)

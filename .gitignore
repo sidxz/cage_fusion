@@ -62,3 +62,5 @@ maildir
 
 #Logs
 logs/
+
+data/

@@ -1,33 +1,33 @@
 import h5py
 import joblib
 import torch
-import threading
 import numpy as np
 from collections import OrderedDict
 from torch.utils.data import Dataset
 from cage_fusion.utils.logging_utils import logger
 
-# Thread-local cache for HDF5 handles (per worker in multiprocessing)
-_worker_cache = threading.local()
-
 
 class CageFusionStreamingDataset(Dataset):
     """
     Dataset for streaming token embeddings, auxiliary features, labels, and molecular graphs
-    from disk using multiprocessing-safe HDF5 handles.
+    from disk using safe, per-instance HDF5 handles.
     """
 
     def __init__(self, h5_path: str, graph_path: str, tokenizer_pad_id: int = 0):
         self.h5_path = h5_path
         self.pad_token_id = tokenizer_pad_id
+        self._h5_handle = None  # Instance-level HDF5 handle (lazy-loaded)
 
-        # Load precomputed graph features
+        logger.debug(f"Loading HDF5 dataset from: {h5_path}")
+        logger.debug(f"Loading graph features from: {graph_path}")
+        logger.debug(f"Using pad token ID: {self.pad_token_id}")
+
         try:
             self.graphs = joblib.load(graph_path)
         except Exception as e:
             raise RuntimeError(f"Failed to load graph features from {graph_path}: {e}")
 
-        # Validate presence of key datasets in HDF5
+        # Validate dataset structure and get length
         with h5py.File(h5_path, "r") as f:
             if "input_ids" not in f or "labels" not in f:
                 raise KeyError(
@@ -49,14 +49,13 @@ class CageFusionStreamingDataset(Dataset):
         return self.length
 
     def _get_h5_file_handle(self):
-        """Returns a per-worker cached HDF5 file handle."""
-        if not hasattr(_worker_cache, "h5_file"):
-            _worker_cache.h5_file = h5py.File(self.h5_path, "r")
-        return _worker_cache.h5_file
+        """Returns a per-instance HDF5 file handle (lazy-loaded)."""
+        if self._h5_handle is None:
+            self._h5_handle = h5py.File(self.h5_path, "r")
+        return self._h5_handle
 
     def __getitem__(self, idx: int) -> tuple:
         h5 = self._get_h5_file_handle()
-
         return (
             self.graphs[idx],
             torch.tensor(h5["embedding"][idx], dtype=torch.float32),
@@ -66,14 +65,14 @@ class CageFusionStreamingDataset(Dataset):
         )
 
     def __del__(self):
-        """Ensure HDF5 handle is closed when dataset is garbage collected."""
-        if hasattr(_worker_cache, "h5_file"):
+        """Ensure the per-instance HDF5 handle is properly closed."""
+        if self._h5_handle is not None:
             try:
-                _worker_cache.h5_file.close()
+                self._h5_handle.close()
             except Exception:
                 logger.warning("Failed to close HDF5 file cleanly.")
             finally:
-                del _worker_cache.h5_file
+                self._h5_handle = None
 
 
 class MiniBatchCacheDataset(Dataset):

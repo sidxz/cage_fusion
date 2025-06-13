@@ -61,6 +61,7 @@ def run_library_test():
     config["num_tasks"] = 2
     config["batch_size"] = 2
     config["num_epochs"] = 5
+    config["base_cache_dir"] = cache_dir  # Add the cache dir to the config
     logger.info(
         f"Using Test Config: Epochs={config['num_epochs']}, "
         f"Batch Size={config['batch_size']}, Tasks={config['num_tasks']}"
@@ -120,6 +121,7 @@ def run_library_test():
     # --- Step 6: Training Loop Test ---
     console.rule("[bold yellow]Step 6/7: Training")
     try:
+        # CORRECTED: Call train_model with the config dictionary
         history = train_model(
             model=model,
             train_loader=train_loader,
@@ -128,9 +130,7 @@ def run_library_test():
             criterion=criterion,
             scheduler=scheduler,
             device=device,
-            num_epochs=config["num_epochs"],
-            num_tasks=config["num_tasks"],
-            base_cache_dir=cache_dir,
+            config=config,  # Pass the entire config object
             label_names=labels,
             tokenizer_obj=tokenizer,
         )
