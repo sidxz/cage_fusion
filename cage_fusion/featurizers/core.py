@@ -22,12 +22,14 @@ from .helpers import (
     normalize_auxiliary_features,
 )
 
+
 def clean_descriptors(x: np.ndarray) -> np.ndarray:
     """Sanitize and clip descriptor values."""
     if np.isnan(x).any() or np.isinf(x).any():
         logger.warning("NaN or Inf found in auxiliary descriptors")
         x = np.nan_to_num(x, nan=0.0, posinf=1e4, neginf=-1e4)
     return np.clip(x, -1e4, 1e4)
+
 
 def featurize_and_save_streaming(
     df: pd.DataFrame,
@@ -61,6 +63,9 @@ def featurize_and_save_streaming(
     desc_calc = MoleculeDescriptors.MolecularDescriptorCalculator(descriptor_names)
     graph_featurizer = SimpleMoleculeMolGraphFeaturizer()
     D_aux_feats = len(descriptor_names)
+
+    # --- FIX: Ensure SMILES column is string type ---
+    df["SMILES_Canonical"] = df["SMILES_Canonical"].astype(str)
 
     df["mol"] = df["SMILES_Canonical"].apply(Chem.MolFromSmiles)
     if df["mol"].isnull().any():
@@ -113,8 +118,16 @@ def featurize_and_save_streaming(
 
             with h5py.File(h5_path, "a") as f:
                 graph_feats = process_auxiliary_features(
-                    batch_df, i, graph_feats, graph_featurizer, desc_calc,
-                    label_cols, current_scaler, f, fit_scaler, clean_descriptors
+                    batch_df,
+                    i,
+                    graph_feats,
+                    graph_featurizer,
+                    desc_calc,
+                    label_cols,
+                    current_scaler,
+                    f,
+                    fit_scaler,
+                    clean_descriptors,
                 )
 
             if len(graph_feats) >= graph_dump_interval:

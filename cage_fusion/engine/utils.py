@@ -97,4 +97,4 @@ def visualize_attention_weights(
     plt.tight_layout()
     plt.savefig(output_path, dpi=150, bbox_inches="tight")
     plt.close(fig)
-    logger.info(f"Saved attention visualization to: {output_path}")
+    #logger.info(f"Saved attention visualization to: {output_path}")
