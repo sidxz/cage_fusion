@@ -98,3 +98,52 @@ def visualize_attention_weights(
     plt.savefig(output_path, dpi=150, bbox_inches="tight")
     plt.close(fig)
     #logger.info(f"Saved attention visualization to: {output_path}")
+    
+    
+    
+    
+    # file: cage_fusion/engine/utils.py
+
+import torch
+import h5py
+from typing import Tuple
+
+def compute_pos_weight_from_h5(
+    h5_path: str,
+    chunk_size: int = 10_000,
+    epsilon: float = 1e-6,
+    verbose: bool = True
+) -> torch.Tensor:
+    """
+    Stream and compute class-wise pos_weight from labels in an HDF5 file.
+    
+    Args:
+        h5_path (str): Path to the HDF5 file containing a 'labels' dataset.
+        chunk_size (int): Number of rows to read at once.
+        epsilon (float): Small constant to avoid division by zero.
+        verbose (bool): Whether to print counts and weights.
+
+    Returns:
+        torch.Tensor: pos_weight tensor of shape [num_classes]
+    """
+    with h5py.File(h5_path, "r") as f:
+        labels_dset = f["labels"]
+        num_samples, num_classes = labels_dset.shape
+
+        pos_counts = torch.zeros(num_classes, dtype=torch.float64)
+        neg_counts = torch.zeros(num_classes, dtype=torch.float64)
+
+        for i in range(0, num_samples, chunk_size):
+            labels = torch.tensor(labels_dset[i:i+chunk_size], dtype=torch.float32)
+            pos_counts += labels.sum(dim=0)
+            neg_counts += (1.0 - labels).sum(dim=0)
+
+    pos_weight = (neg_counts / (pos_counts + epsilon)).to(torch.float32)
+
+    if verbose:
+        logger.info(f"Positive counts per class: {pos_counts.tolist()}")
+        logger.info(f"Negative counts per class: {neg_counts.tolist()}")
+        logger.info(f"Calculated pos_weight: {pos_weight.tolist()}")
+
+    return pos_weight
+

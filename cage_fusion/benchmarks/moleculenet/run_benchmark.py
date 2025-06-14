@@ -34,7 +34,7 @@ from cage_fusion.engine.training import train_model
 from cage_fusion.engine.evaluation import evaluate_model
 from cage_fusion.engine.dataset import CageFusionStreamingDataset, MiniBatchCacheDataset
 from cage_fusion.engine.data_utils import collate_fn_for_cage_fusion
-from cage_fusion.engine.utils import move_bmg_to_device
+from cage_fusion.engine.utils import move_bmg_to_device, compute_pos_weight_from_h5
 from cage_fusion.utils.logging_utils import logger
 
 # --- Setup Console ---
@@ -209,15 +209,15 @@ def run_benchmark(
     config["tasks"] = tasks
     config["base_cache_dir"] = base_cache_dir
     config["batch_size"] = 200
-    config["num_epochs"] = 35
+    config["num_epochs"] = 20
 
     console.rule("[bold yellow]Featurization and Setup")
     tokenizer = AutoTokenizer.from_pretrained(config["model_checkpoint"])
     embedding_model = AutoModel.from_pretrained(config["model_checkpoint"]).eval()
 
     # Compute and add token prior to config
-    token_prior = compute_token_prior(tokenizer, df_train.SMILES_Canonical.tolist())
-    config["token_importance_prior"] = token_prior.to(torch.device(config["device"]))
+    #token_prior = compute_token_prior(tokenizer, df_train.SMILES_Canonical.tolist())
+    #config["token_importance_prior"] = token_prior.to(torch.device(config["device"]))
 
     h5_paths, glob_paths = {}, {}
     scaler = None
@@ -271,7 +271,11 @@ def run_benchmark(
     device = torch.device(config["device"])
     model = CAGEFusionModel(config).to(device)
     optimizer = torch.optim.Adam(model.parameters(), lr=config["learning_rate"])
-    criterion = torch.nn.BCEWithLogitsLoss()
+
+    pos_weight = compute_pos_weight_from_h5(h5_path=h5_paths["train"]).to(device)
+    criterion = torch.nn.BCEWithLogitsLoss(pos_weight=pos_weight)
+
+
     scheduler = get_cosine_schedule_with_warmup(
         optimizer,
         num_warmup_steps=int(
@@ -347,4 +351,4 @@ if __name__ == "__main__":
         help="Dataset splitting method: scaffold (default), random, or stratified.",
     )
     args = parser.parse_args()
-    run_benchmark(args.dataset, args.seed, args.force_rerun)
+    run_benchmark(args.dataset, args.seed, args.force_rerun, args.splitter)

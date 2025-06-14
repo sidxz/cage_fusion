@@ -3,18 +3,40 @@ import matplotlib.pyplot as plt
 from cage_fusion.utils.logging_utils import logger
 from rich.console import Console
 from rich.table import Table
+import matplotlib.pyplot as plt
+import pandas as pd
+import os
+import matplotlib.pyplot as plt
+import numpy as np
+import seaborn as sns
+from sklearn.metrics import confusion_matrix
 
 console = Console()
 
 
-import matplotlib.pyplot as plt
-import pandas as pd
-import os
+def plot_confusion_matrix(y_true, y_pred, title, save_path):
+    cm = confusion_matrix(y_true, y_pred)
+    plt.figure(figsize=(4, 3))
+    sns.heatmap(
+        cm,
+        annot=True,
+        fmt="d",
+        cmap="Blues",
+        xticklabels=["0", "1"],
+        yticklabels=["0", "1"],
+    )
+    plt.xlabel("Predicted")
+    plt.ylabel("Actual")
+    plt.title(title)
+    plt.tight_layout()
+    plt.savefig(save_path)
+    plt.close()
+
 
 def plot_training_history(history, output_dir=None):
     """
     Plot training and validation curves, and save training history as CSV.
-    
+
     Args:
         history (dict): Training history with keys like 'train_loss', 'val_loss', etc.
         output_dir (str, optional): If provided, saves plots and CSV there.
@@ -45,7 +67,13 @@ def plot_training_history(history, output_dir=None):
         plt.close()
 
     # Save history to CSV
-    df = pd.DataFrame({k: v for k, v in history.items() if isinstance(v, list) or isinstance(v, float)})
+    df = pd.DataFrame(
+        {
+            k: v
+            for k, v in history.items()
+            if isinstance(v, list) or isinstance(v, float)
+        }
+    )
     if output_dir:
         csv_path = os.path.join(output_dir, "training_history.csv")
         df.to_csv(csv_path, index_label="epoch")

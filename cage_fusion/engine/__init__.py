@@ -15,5 +15,5 @@ from .metrics import (
 )
 
 # Logging and utilities
-from .logging import plot_training_history, log_epoch_results
+from .logging import plot_training_history, log_epoch_results, plot_confusion_matrix
 from .utils import move_bmg_to_device, visualize_attention_weights

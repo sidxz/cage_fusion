@@ -24,7 +24,7 @@ def get_default_config():
         "aux_feature_dim": 217,              # Dimension of auxiliary features
         "num_tasks": 6,                      # Number of prediction tasks
         "num_heads": 8,                      # Number of attention heads
-        "cross_attn_dropout": 0.2,           # Dropout rate in cross-attention
+        "cross_attn_dropout": 0.1,           # Dropout rate in cross-attention
         "proj_dropout": 0.1,                 # Dropout rate in projection layers
         "use_atom_level_queries": True,      # Enable atom-level querying
         "use_advanced_features": True,       # Include additional advanced features
@@ -38,7 +38,7 @@ def get_default_config():
 
         # === Attention Regularization ===
         "lambda_entropy": 0.001,             # Entropy loss weight for attention sparsity
-        "lambda_prior": 0.01,                # Prior loss weight using token importance
+        "lambda_prior": 0.000,                # Prior loss weight using token importance
 
         # === Data Processing Settings ===
         "max_seq_len": 512,                  # Maximum sequence length for token inputs
