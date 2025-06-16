@@ -191,7 +191,7 @@ def run_benchmark(
     dataset_name: str, seed: int, force_rerun: bool, splitter: str = "scaffold"
 ):
     console.rule(
-        f"[bold cyan]MoleculeNet Benchmark: {dataset_name} (Seed: {seed}), Force Rerun: {force_rerun}"
+        f"[bold cyan]MoleculeNet Benchmark: {dataset_name} (Seed: {seed}), Force Rerun: {force_rerun}, Splitter: {splitter}"
     )
     set_seed(seed)
     base_cache_dir = os.path.join(
@@ -202,14 +202,16 @@ def run_benchmark(
         logger.warning(f"Force rerun enabled. Deleting cache: {base_cache_dir}")
         shutil.rmtree(base_cache_dir)
 
-    df_train, df_val, df_test, tasks = load_moleculenet_dataset(dataset_name, seed=seed)
+    df_train, df_val, df_test, tasks = load_moleculenet_dataset(dataset_name=dataset_name, seed=seed, splitter=splitter)
 
     config = get_default_config()
     config["num_tasks"] = len(tasks)
     config["tasks"] = tasks
     config["base_cache_dir"] = base_cache_dir
     config["batch_size"] = 200
-    config["num_epochs"] = 20
+    config["num_epochs"] = 40
+    config["learning_rate"] = 4e-3
+    config["warmup_fraction"] = 0.1
 
     console.rule("[bold yellow]Featurization and Setup")
     tokenizer = AutoTokenizer.from_pretrained(config["model_checkpoint"])

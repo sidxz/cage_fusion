@@ -159,7 +159,7 @@ class CAGEFusionModel(nn.Module):
 
         # Learnable scaling factors for fusion contributions
         self.scale_graph = nn.Parameter(torch.tensor(1.0))
-        self.scale_attn = nn.Parameter(torch.tensor(0.1))
+        self.scale_attn = nn.Parameter(torch.tensor(0.05))
         self.scale_aux = nn.Parameter(torch.tensor(0.1))
 
         # Final MLP fusion network combining graph, text, and auxiliary features
