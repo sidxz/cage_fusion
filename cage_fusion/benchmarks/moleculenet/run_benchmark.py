@@ -209,7 +209,7 @@ def run_benchmark(
     config["tasks"] = tasks
     config["base_cache_dir"] = base_cache_dir
     config["batch_size"] = 200
-    config["num_epochs"] = 40
+    config["num_epochs"] = 2
     config["learning_rate"] = 4e-3
     config["warmup_fraction"] = 0.1
 

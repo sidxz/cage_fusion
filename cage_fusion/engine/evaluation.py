@@ -59,7 +59,12 @@ def evaluate_model(
         return_attn = plot_attn and not has_plotted
         
         outputs = model(
-            bmg=bmg, embedding_tokens=token_embs, attn_mask=attn_mask, aux_feats=rdkit_feats, input_ids_batch=input_ids_batch, return_attn=True
+            bmg=bmg,
+            sequence_embeddings=token_embs,
+            attn_mask=attn_mask,
+            aux_feats=rdkit_feats,
+            input_ids_batch=input_ids_batch,
+            return_attn=True
         )
         
         logits, _, _, attn_weights, attn_output, graph_repr = outputs

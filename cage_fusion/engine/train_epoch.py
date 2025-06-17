@@ -92,10 +92,10 @@ def train_one_epoch(
         optimizer.zero_grad()
 
         output = model(
-            bmg,
-            token_embs,
-            attn_mask,
-            aux_feats,
+            bmg=bmg,
+            sequence_embeddings=token_embs,
+            attn_mask=attn_mask,
+            aux_feats=aux_feats,
             input_ids_batch=input_ids,
             return_attn=True,
         )
