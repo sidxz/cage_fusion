@@ -22,14 +22,19 @@ def train_model(
     Full training loop with checkpointing, evaluation, and visual logging.
     """
     base_cache_dir = config["base_cache_dir"]
+    checkpoint_dir = config["checkpoints_dir"]
+    output_dir = config["output_dir"]
+
     num_epochs = config["num_epochs"]
     num_tasks = config["num_tasks"]
     lambda_entropy = config["lambda_entropy"]
     lambda_prior = config["lambda_prior"]
 
     os.makedirs(base_cache_dir, exist_ok=True)
-    checkpoint_path = os.path.join(base_cache_dir, "latest_checkpoint.pt")
-    best_model_path = os.path.join(base_cache_dir, "best_model.pt")
+    os.makedirs(checkpoint_dir, exist_ok=True)
+    
+    checkpoint_path = os.path.join(checkpoint_dir, "latest_checkpoint.pt")
+    best_model_path = os.path.join(checkpoint_dir, "best_model.pt")
     start_epoch = 1
     best_val_auc = -1.0
 
@@ -176,5 +181,5 @@ def train_model(
             )
 
     logger.info("Training completed.")
-    plot_training_history(history, output_dir=config["base_cache_dir"])
+    plot_training_history(history, output_dir=output_dir)
     return history

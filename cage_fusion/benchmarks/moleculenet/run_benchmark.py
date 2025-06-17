@@ -1,3 +1,13 @@
+#!/usr/bin/env python3
+
+"""
+Script to run MoleculeNet benchmark for CAGE-Fusion model.
+
+Best practices:
+- All directory paths and configurable values at the top.
+- Logging, error handling, and readability improved.
+"""
+
 import os
 import sys
 import torch
@@ -11,39 +21,55 @@ import argparse
 import random
 from collections import Counter
 
-# Add project root to the Python path to allow for local imports
+# ======== Configurable Paths and Variables ========
+DATA_ROOT = "data"  # Top-level data directory
+DATA_DIR = os.path.join(DATA_ROOT, "molnet")
+CACHE_ROOT = os.path.join(DATA_ROOT, "cache")
+FEATURES_ROOT = os.path.join(DATA_ROOT, "features")
+CHECKPOINTS_ROOT = "checkpoints"
+OUTPUT_ROOT = "output"
+DEFAULT_DATASET = "bace_classification"
+DEFAULT_SEED = 42
+DEFAULT_FORCE_RERUN = False
+DEFAULT_SPLITTER = "scaffold"
+DEFAULT_BATCH_SIZE = 200
+DEFAULT_NUM_EPOCHS = 2
+DEFAULT_LR = 4e-3
+DEFAULT_WARMUP_FRAC = 0.1
+MODEL_BEST = "best_model.pt"
+MODEL_LATEST = "latest_checkpoint.pt"
+MIN_TOKEN_FREQ = 10
+
+# ======== Project Path Setup ========
 project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
 if project_root not in sys.path:
     sys.path.insert(0, project_root)
 
-# DeepChem and Transformer imports
+# ======== Third-party & Local Imports ========
 import deepchem as dc
 from deepchem.feat import RawFeaturizer
 from transformers import AutoTokenizer, AutoModel, get_cosine_schedule_with_warmup
-
-# Rich and logging imports
 from rich.console import Console
 from rich.table import Table
 from rich.traceback import install
 
-# Local library imports
 from cage_fusion.configs import get_default_config
 from cage_fusion.featurizers import featurize_and_save_streaming
 from cage_fusion.models import CAGEFusionModel
 from cage_fusion.engine.training import train_model
 from cage_fusion.engine.evaluation import evaluate_model
-from cage_fusion.engine.dataset import CageFusionStreamingDataset, MiniBatchCacheDataset
+from cage_fusion.engine.dataset import CageFusionStreamingDataset
 from cage_fusion.engine.data_utils import collate_fn_for_cage_fusion
-from cage_fusion.engine.utils import move_bmg_to_device, compute_pos_weight_from_h5
+from cage_fusion.engine.utils import compute_pos_weight_from_h5
 from cage_fusion.utils.logging_utils import logger
 
-# --- Setup Console ---
+# ======== Console Setup ========
 install()
 console = Console()
 
 
-def set_seed(seed_value=42):
-    """Set seed for reproducibility across all libraries."""
+def set_seed(seed_value=DEFAULT_SEED):
+    """Set seed for reproducibility across libraries."""
     random.seed(seed_value)
     np.random.seed(seed_value)
     torch.manual_seed(seed_value)
@@ -51,11 +77,13 @@ def set_seed(seed_value=42):
         torch.cuda.manual_seed_all(seed_value)
         torch.backends.cudnn.deterministic = True
         torch.backends.cudnn.benchmark = False
-    logger.info(f"Global seed set to {seed_value} for full reproducibility.")
+    logger.info(f"Global seed set to {seed_value} for reproducibility.")
 
 
-def compute_token_prior(tokenizer, texts, min_freq=10):
-    """Computes a token importance prior based on inverse frequency."""
+def compute_token_prior(tokenizer, texts, min_freq=MIN_TOKEN_FREQ):
+    """
+    Computes a token importance prior based on inverse frequency.
+    """
     logger.info("Computing token importance prior...")
     token_freq = Counter(tok for txt in texts for tok in tokenizer.tokenize(txt))
     prior = np.zeros(tokenizer.vocab_size, dtype=np.float32)
@@ -65,24 +93,22 @@ def compute_token_prior(tokenizer, texts, min_freq=10):
         tid = tokenizer.convert_tokens_to_ids(tok)
         if tid != tokenizer.unk_token_id:
             prior[tid] = importance
-    # Normalize
     prior /= np.max(prior)
     logger.info("Token importance prior computed.")
     return torch.tensor(prior)
 
 
-def load_moleculenet_dataset(
-    dataset_name: str, data_dir="data/molnet", seed=42, splitter="scaffold"
-):
+def load_moleculenet_dataset(dataset_name, data_dir, seed, splitter):
     """
-    Loads a MoleculeNet dataset using DeepChem's standard scaffold splitter.
+    Loads a MoleculeNet dataset using DeepChem.
+    Returns: train_df, val_df, test_df, tasks
     """
     console.rule(
-        f"[bold yellow]Loading MoleculeNet Dataset: {dataset_name} with splitter '{splitter}'"
+        f"[bold yellow]Loading MoleculeNet Dataset: {dataset_name} (split: {splitter})"
     )
     try:
         loader_fn = getattr(dc.molnet, f"load_{dataset_name}")
-        tasks, datasets, transformers = loader_fn(
+        tasks, datasets, _ = loader_fn(
             featurizer=RawFeaturizer(),
             splitter=splitter,
             reload=True,
@@ -91,33 +117,18 @@ def load_moleculenet_dataset(
         )
         train_ds, val_ds, test_ds = datasets
 
-        def process_dataframe(ds, task_list):
-            """Converts DeepChem dataset to a clean pandas DataFrame."""
+        def ds_to_df(ds, task_list):
             data = {"SMILES_Canonical": ds.ids}
             for i, task in enumerate(task_list):
                 data[task] = ds.y[:, i]
             return pd.DataFrame(data)
 
-        df_train = process_dataframe(train_ds, tasks)
-        df_val = process_dataframe(val_ds, tasks)
-        df_test = process_dataframe(test_ds, tasks)
+        df_train = ds_to_df(train_ds, tasks)
+        df_val = ds_to_df(val_ds, tasks)
+        df_test = ds_to_df(test_ds, tasks)
 
-        logger.info(f"Loaded dataset: {dataset_name}")
-        logger.info(f"Tasks: {tasks}")
+        logger.info(f"Loaded dataset: {dataset_name}, Tasks: {tasks}")
         logger.info(f"Train: {len(df_train)}, Val: {len(df_val)}, Test: {len(df_test)}")
-
-        # Print label distribution
-        def print_distribution(df, split_name):
-            logger.info(f"Label distribution per task in {split_name} set:")
-            for task in tasks:
-                counts = df[task].value_counts(dropna=True).to_dict()
-                num_zeros = int(counts.get(0.0, 0))
-                num_ones = int(counts.get(1.0, 0))
-                logger.info(f"  {task}: 0s = {num_zeros}, 1s = {num_ones}")
-
-        print_distribution(df_train, "train")
-        print_distribution(df_val, "val")
-        print_distribution(df_test, "test")
 
         return df_train, df_val, df_test, tasks
 
@@ -131,6 +142,9 @@ def load_moleculenet_dataset(
 
 
 def combine_graph_parts(glob_pattern, output_path):
+    """
+    Combine pickled feature parts into a single file.
+    """
     part_files = sorted(glob.glob(glob_pattern))
     if not part_files:
         raise FileNotFoundError(f"No graph part files found: {glob_pattern}")
@@ -139,7 +153,10 @@ def combine_graph_parts(glob_pattern, output_path):
     joblib.dump(all_feats, output_path, compress=3)
 
 
-def run_final_evaluation(checkpoint_path, title, test_loader, device, base_cache_dir):
+def run_final_evaluation(checkpoint_path, title, test_loader, device, cache_dir):
+    """
+    Load model from checkpoint and evaluate on test set.
+    """
     console.rule(f"[bold green]Final Evaluation on Test Set ({title})")
     if not os.path.exists(checkpoint_path):
         logger.error(f"{title} checkpoint not found: {checkpoint_path}")
@@ -150,26 +167,23 @@ def run_final_evaluation(checkpoint_path, title, test_loader, device, base_cache
     best_thresholds = checkpoint.get("best_thresholds")
     logger.info(f"Best thresholds: {best_thresholds}")
 
-    logger.info("Creating a fresh model instance for evaluation...")
     model = CAGEFusionModel(config).to(device)
     model.load_state_dict(checkpoint["model_state_dict"], strict=True)
-
     model.eval()
     logger.info(f"Loaded {title} model from epoch {checkpoint['epoch']}")
 
     criterion = torch.nn.BCEWithLogitsLoss()
-
-    (test_loss, test_mcc, test_auc, test_pr, _, per_task_metrics, _, _, _) = (
-        evaluate_model(
-            model=model,
-            loader=test_loader,
-            criterion=criterion,
-            device=device,
-            num_tasks=config["num_tasks"],
-            label_names=config["tasks"],
-            use_precomputed_thresholds=best_thresholds,
-            cache_dir=os.path.join(base_cache_dir, f"test_eval_{title.lower()}"),
-        )
+    (
+        test_loss, test_mcc, test_auc, test_pr, _, per_task_metrics, _, _, _
+    ) = evaluate_model(
+        model=model,
+        loader=test_loader,
+        criterion=criterion,
+        device=device,
+        num_tasks=config["num_tasks"],
+        label_names=config["tasks"],
+        use_precomputed_thresholds=best_thresholds,
+        cache_dir=os.path.join(cache_dir, f"test_eval_{title.lower()}"),
     )
 
     console.rule(f"[bold magenta]Final Test Set Results ({title})")
@@ -187,39 +201,66 @@ def run_final_evaluation(checkpoint_path, title, test_loader, device, base_cache
         console.print(task_table)
 
 
-def run_benchmark(
-    dataset_name: str, seed: int, force_rerun: bool, splitter: str = "scaffold"
-):
+def run_benchmark(dataset_name, seed, force_rerun, splitter):
+    """
+    Main pipeline for running the CAGE-Fusion benchmark.
+    """
+    # Directory for this run
+    config = get_default_config()
+    
+    run_id = f"{dataset_name}_seed{seed}"
+    
+    config["base_cache_dir"] = os.path.join(CACHE_ROOT, run_id)
+    config["features_dir"] = os.path.join(FEATURES_ROOT, run_id)
+    config["checkpoints_dir"] = os.path.join(CHECKPOINTS_ROOT, run_id)
+    config["data_dir"] = os.path.join(DATA_DIR, dataset_name)
+    config["output_dir"] = os.path.join(OUTPUT_ROOT, run_id)
+
+
     console.rule(
         f"[bold cyan]MoleculeNet Benchmark: {dataset_name} (Seed: {seed}), Force Rerun: {force_rerun}, Splitter: {splitter}"
     )
     set_seed(seed)
-    base_cache_dir = os.path.join(
-        "data/molnet/bench_cache", f"{dataset_name}_seed{seed}"
+
+    # Optionally clear cache and checkpoints
+    if force_rerun:
+        if os.path.exists(config["base_cache_dir"]):
+            logger.warning(f"Force rerun enabled. Deleting cache: {config['base_cache_dir']}")
+            shutil.rmtree(config["base_cache_dir"])
+        if os.path.exists(config["features_dir"]):
+            logger.warning(f"Force rerun enabled. Deleting features: {config['features_dir']}")
+            shutil.rmtree(config["features_dir"])
+        if os.path.exists(config["checkpoints_dir"]):
+            logger.warning(f"Force rerun enabled. Deleting checkpoints: {config['checkpoints_dir']}")
+            shutil.rmtree(config["checkpoints_dir"])
+
+    # Create fresh dirs if needed
+    os.makedirs(config["data_dir"], exist_ok=True)
+    os.makedirs(config["base_cache_dir"], exist_ok=True)
+    os.makedirs(config["features_dir"], exist_ok=True)
+    os.makedirs(config["checkpoints_dir"], exist_ok=True)
+    os.makedirs(config["output_dir"], exist_ok=True)
+
+    # Data loading
+    df_train, df_val, df_test, tasks = load_moleculenet_dataset(
+        dataset_name=dataset_name,
+        data_dir=config["data_dir"],
+        seed=seed,
+        splitter=splitter
     )
+    
 
-    if force_rerun and os.path.exists(base_cache_dir):
-        logger.warning(f"Force rerun enabled. Deleting cache: {base_cache_dir}")
-        shutil.rmtree(base_cache_dir)
-
-    df_train, df_val, df_test, tasks = load_moleculenet_dataset(dataset_name=dataset_name, seed=seed, splitter=splitter)
-
-    config = get_default_config()
     config["num_tasks"] = len(tasks)
     config["tasks"] = tasks
-    config["base_cache_dir"] = base_cache_dir
-    config["batch_size"] = 200
-    config["num_epochs"] = 2
-    config["learning_rate"] = 4e-3
-    config["warmup_fraction"] = 0.1
+    
+    config["batch_size"] = DEFAULT_BATCH_SIZE
+    config["num_epochs"] = DEFAULT_NUM_EPOCHS
+    config["learning_rate"] = DEFAULT_LR
+    config["warmup_fraction"] = DEFAULT_WARMUP_FRAC
 
     console.rule("[bold yellow]Featurization and Setup")
     tokenizer = AutoTokenizer.from_pretrained(config["model_checkpoint"])
     embedding_model = AutoModel.from_pretrained(config["model_checkpoint"]).eval()
-
-    # Compute and add token prior to config
-    #token_prior = compute_token_prior(tokenizer, df_train.SMILES_Canonical.tolist())
-    #config["token_importance_prior"] = token_prior.to(torch.device(config["device"]))
 
     h5_paths, glob_paths = {}, {}
     scaler = None
@@ -228,7 +269,7 @@ def run_benchmark(
             df=df,
             name=split,
             label_cols=tasks,
-            cache_dir=base_cache_dir,
+            cache_dir=config["features_dir"],
             tokenizer=tokenizer,
             model=embedding_model,
             fit_scaler=(split == "train"),
@@ -240,13 +281,13 @@ def run_benchmark(
 
     for split, glob_p in glob_paths.items():
         combine_graph_parts(
-            glob_p, os.path.join(base_cache_dir, f"{split}_graph_feats.pkl")
+            glob_p, os.path.join(config["features_dir"], f"{split}_graph_feats.pkl")
         )
 
     g = torch.Generator().manual_seed(seed)
     train_loader = torch.utils.data.DataLoader(
         CageFusionStreamingDataset(
-            h5_paths["train"], os.path.join(base_cache_dir, "train_graph_feats.pkl")
+            h5_paths["train"], os.path.join(config["features_dir"], f"train_graph_feats.pkl")
         ),
         batch_size=config["batch_size"],
         collate_fn=collate_fn_for_cage_fusion,
@@ -255,7 +296,7 @@ def run_benchmark(
     )
     val_loader = torch.utils.data.DataLoader(
         CageFusionStreamingDataset(
-            h5_paths["val"], os.path.join(base_cache_dir, "val_graph_feats.pkl")
+            h5_paths["val"], os.path.join(config["features_dir"], f"val_graph_feats.pkl")
         ),
         batch_size=config["batch_size"],
         shuffle=False,
@@ -263,7 +304,7 @@ def run_benchmark(
     )
     test_loader = torch.utils.data.DataLoader(
         CageFusionStreamingDataset(
-            h5_paths["test"], os.path.join(base_cache_dir, "test_graph_feats.pkl")
+            h5_paths["test"], os.path.join(config["features_dir"], f"test_graph_feats.pkl")
         ),
         batch_size=config["batch_size"],
         collate_fn=collate_fn_for_cage_fusion,
@@ -273,10 +314,8 @@ def run_benchmark(
     device = torch.device(config["device"])
     model = CAGEFusionModel(config).to(device)
     optimizer = torch.optim.Adam(model.parameters(), lr=config["learning_rate"])
-
     pos_weight = compute_pos_weight_from_h5(h5_path=h5_paths["train"]).to(device)
     criterion = torch.nn.BCEWithLogitsLoss(pos_weight=pos_weight)
-
 
     scheduler = get_cosine_schedule_with_warmup(
         optimizer,
@@ -300,8 +339,11 @@ def run_benchmark(
         tokenizer,
     )
 
-    best_model_path = os.path.join(base_cache_dir, "best_model.pt")
-    latest_model_path = os.path.join(base_cache_dir, "latest_checkpoint.pt")
+    best_model_path = os.path.join(config["checkpoints_dir"], MODEL_BEST)
+    latest_model_path = os.path.join(config["checkpoints_dir"], MODEL_LATEST)
+
+    # Save checkpoints to the new checkpoints dir
+    # NOTE: Make sure your train_model and/or saving logic writes to run_ckpt_dir
 
     # Clear memory
     del model
@@ -312,7 +354,7 @@ def run_benchmark(
         title="Latest Model",
         test_loader=test_loader,
         device=device,
-        base_cache_dir=base_cache_dir,
+        cache_dir=config["base_cache_dir"],
     )
 
     run_final_evaluation(
@@ -320,37 +362,42 @@ def run_benchmark(
         title="Best Model",
         test_loader=test_loader,
         device=device,
-        base_cache_dir=base_cache_dir,
+        cache_dir=config["base_cache_dir"],
     )
 
     console.rule("[bold green]✨ Benchmark Complete!")
 
 
-if __name__ == "__main__":
+def parse_args():
+    """Parse command line arguments."""
     parser = argparse.ArgumentParser(
         description="Run MoleculeNet benchmark for CAGE-Fusion model."
     )
     parser.add_argument(
         "--dataset",
         type=str,
-        default="bace_classification",
-        help="Name of the MoleculeNet dataset to use (e.g., bace_classification, clintox, sider).",
+        default=DEFAULT_DATASET,
+        help="Name of the MoleculeNet dataset to use.",
     )
     parser.add_argument(
-        "--seed", type=int, default=42, help="Random seed for reproducibility."
+        "--seed", type=int, default=DEFAULT_SEED, help="Random seed for reproducibility."
     )
     parser.add_argument(
         "--force-rerun",
         action="store_true",
-        default=False,
-        help="Force rerunning by deleting the cache first.",
+        default=DEFAULT_FORCE_RERUN,
+        help="Force rerunning by deleting cache and checkpoints.",
     )
     parser.add_argument(
         "--splitter",
         type=str,
-        default="scaffold",
+        default=DEFAULT_SPLITTER,
         choices=["scaffold", "random", "stratified"],
-        help="Dataset splitting method: scaffold (default), random, or stratified.",
+        help="Dataset splitting method.",
     )
-    args = parser.parse_args()
+    return parser.parse_args()
+
+
+if __name__ == "__main__":
+    args = parse_args()
     run_benchmark(args.dataset, args.seed, args.force_rerun, args.splitter)

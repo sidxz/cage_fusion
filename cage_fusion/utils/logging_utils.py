@@ -1,34 +1,45 @@
-# cage_fusion/utils/logging_utils.py
-
+import os
 import logging
 from rich.logging import RichHandler
 from loguru import logger as loguru_logger
 
-# === Configure Rich logging for console ===
+# Ensure the logs directory exists
+os.makedirs("logs", exist_ok=True)
+
+# === 1. RichHandler for console ===
 logging.basicConfig(
     level=logging.INFO,
     format="%(message)s",
     handlers=[RichHandler(rich_tracebacks=True, markup=True, show_path=False)]
 )
 
-# Create a standard logger for internal use
+# Standard logger for your project
 logger = logging.getLogger("cagefusion")
 
-# === Configure Loguru for file logging ===
-loguru_logger.remove()  # Remove Loguru's default handlers
+# === 2. Loguru for file logging (all logs) ===
+loguru_logger.remove()  # Remove default Loguru handlers
 
-# File logging with rotation
+# Log to file with rotation
 loguru_logger.add(
     "logs/cagefusion.log",
     rotation="10 MB",
     level="DEBUG",
-    format="{time:YYYY-MM-DD HH:mm:ss} | {level} | {message}"
+    format="{time:YYYY-MM-DD HH:mm:ss} | {level} | {message}",
+    enqueue=True
 )
 
-# Optional: Forward loguru logs to standard logger
-class InterceptHandler(logging.Handler):
+# === 3. Propagate ALL standard logging to Loguru (file) ===
+class PropagateToLoguru(logging.Handler):
     def emit(self, record):
-        logger = logging.getLogger(record.name)
-        logger.handle(record)
+        # Use Loguru's level if available, else default to record.levelno
+        try:
+            level = loguru_logger.level(record.levelname).name
+        except ValueError:
+            level = record.levelno
+        loguru_logger.log(level, record.getMessage())
 
-loguru_logger.add(InterceptHandler(), level="INFO")
+# Attach handler to the root logger
+logging.getLogger().addHandler(PropagateToLoguru())
+
+# Now, any call to logger.info(), logger.warning(), etc
+# will print to console (Rich) AND log to file (Loguru)!
