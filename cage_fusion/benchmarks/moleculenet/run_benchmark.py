@@ -284,6 +284,13 @@ def run_benchmark(dataset_name, seed, force_rerun, rerun_train, splitter):
         )
         if split == "train":
             scaler = scaler_obj
+            # Save the scaler for later use
+            scaler_path = os.path.join(
+                config["checkpoints_dir"], "aux_features_scaler.pkl"
+            )
+            joblib.dump(scaler, scaler_path)
+            logger.info(f"Scaler saved to {scaler_path}")
+
         h5_paths[split], glob_paths[split] = h5, glob_p
 
     g = torch.Generator().manual_seed(seed)

@@ -50,7 +50,6 @@ def featurize_and_save_streaming(
     os.makedirs(cache_dir, exist_ok=True)
     h5_path = os.path.join(cache_dir, f"{name}_cage_fusion.h5")
     graph_path_base = os.path.join(cache_dir, f"{name}_graph_feats_part")
-    scaler_path = os.path.join(cache_dir, "aux_features_scaler.pkl")
     bad_smiles_path = os.path.join(cache_dir, f"{name}_bad_smiles.csv")
 
     model_device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -88,10 +87,14 @@ def featurize_and_save_streaming(
             logger.warning(f"HDF5 issue for '{name}': {str(e)}. Re-running.")
             os.remove(h5_path)
 
+    # We'll return this scaler (for train: fitted, for val/test: unchanged)
+    returned_scaler = scaler
+
     if run_featurization:
         logger.info(f"Running featurization for {N} samples (name='{name}')")
         initialize_hdf5_file(h5_path, N, D_seq_len, D_embedding, D_aux_feats, L)
 
+        # Use a fresh scaler if fitting, else use passed scaler
         current_scaler = StandardScaler() if fit_scaler else scaler
         graph_feats, graph_part = [], 0
 
@@ -143,29 +146,36 @@ def featurize_and_save_streaming(
         if graph_feats:
             save_graph_features(graph_feats, graph_path_base, graph_part)
 
+        # If we fit a scaler here (train), update returned_scaler to the fitted scaler
         if fit_scaler:
-            joblib.dump(current_scaler, scaler_path)
-            logger.info(f"Scaler saved to {scaler_path}")
+            returned_scaler = current_scaler
 
-    final_scaler = scaler if not fit_scaler else joblib.load(scaler_path)
+    # Always normalize with the appropriate scaler after featurization
+    scaler_to_use = None
+    if fit_scaler and returned_scaler is not None:
+        scaler_to_use = returned_scaler
+    elif not fit_scaler and scaler is not None:
+        scaler_to_use = scaler
 
-    if final_scaler:
+    if scaler_to_use is not None:
         try:
             normalize_auxiliary_features(
-                h5_path, final_scaler, D_aux_feats, batch_size, name
+                h5_path, scaler_to_use, D_aux_feats, batch_size, name
             )
         except NotFittedError as e:
             logger.error("Scaler must be fitted before normalization.")
             raise e
-        
+
     # ---- Combine part files here ----
     glob_pattern = graph_path_base + "_*.pkl"
     combined_graph_path = os.path.join(cache_dir, f"{name}_graph_feats.pkl")
     part_files = sorted(glob.glob(glob_pattern))
     if not part_files:
         raise FileNotFoundError(f"No graph part files found: {glob_pattern}")
-    logger.info(f"Combining {len(part_files)} graph parts into {combined_graph_path} ...")
+    logger.info(
+        f"Combining {len(part_files)} graph parts into {combined_graph_path} ..."
+    )
     all_feats = [feat for pf in part_files for feat in joblib.load(pf)]
     joblib.dump(all_feats, combined_graph_path, compress=3)
 
-    return h5_path, graph_path_base + "_*.pkl", final_scaler
+    return h5_path, graph_path_base + "_*.pkl", returned_scaler

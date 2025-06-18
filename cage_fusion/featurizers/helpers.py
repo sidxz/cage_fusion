@@ -106,7 +106,21 @@ def process_auxiliary_features(
 
         desc = clean_descriptors(np.array(desc_calc.CalcDescriptors(mol)))
         h5_file["auxiliary_features"][idx] = desc
-        h5_file["labels"][idx] = row[label_cols].astype(np.float32)
+
+        # Robust label handling for inference
+        labels_arr = np.zeros(len(label_cols), dtype=np.float32)
+        missing = []
+        for i, col in enumerate(label_cols):
+            if col in row:
+                labels_arr[i] = row[col]
+            else:
+                missing.append(col)
+        if missing:
+            logger.warning(
+                f"Missing label columns for prediction: {missing} (filling zeros)"
+            )
+
+        h5_file["labels"][idx] = labels_arr
         batch_aux.append(desc)
 
     if fit_scaler and batch_aux:
