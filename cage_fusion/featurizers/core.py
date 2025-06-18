@@ -65,9 +65,9 @@ def featurize_and_save_streaming(
     D_aux_feats = len(descriptor_names)
 
     # --- FIX: Ensure SMILES column is string type ---
-    df["SMILES_Canonical"] = df["SMILES_Canonical"].astype(str)
+    df["SMILES"] = df["SMILES"].astype(str)
 
-    df["mol"] = df["SMILES_Canonical"].apply(Chem.MolFromSmiles)
+    df["mol"] = df["SMILES"].apply(Chem.MolFromSmiles)
     if df["mol"].isnull().any():
         n_bad = df["mol"].isnull().sum()
         logger.warning(f"Found {n_bad} invalid SMILES. Dropping.")
@@ -100,7 +100,7 @@ def featurize_and_save_streaming(
 
         for i in tqdm(range(0, N, batch_size), desc=f"Featurizing {name}"):
             batch_df = df.iloc[i : i + batch_size]
-            smiles_batch = batch_df["SMILES_Canonical"].tolist()
+            smiles_batch = batch_df["SMILES"].tolist()
 
             try:
                 input_ids, embeddings = featurize_batch(
@@ -112,7 +112,7 @@ def featurize_and_save_streaming(
 
             except Exception as e:
                 logger.error(f"Batch {i}-{i + batch_size} failed: {str(e)}")
-                pd.DataFrame({"SMILES_Canonical": smiles_batch}).to_csv(
+                pd.DataFrame({"SMILES": smiles_batch}).to_csv(
                     bad_smiles_path,
                     mode="a",
                     header=not os.path.exists(bad_smiles_path),

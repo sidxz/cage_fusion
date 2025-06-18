@@ -115,7 +115,7 @@ def load_moleculenet_dataset(dataset_name, data_dir, seed, splitter):
         train_ds, val_ds, test_ds = datasets
 
         def ds_to_df(ds, task_list):
-            data = {"SMILES_Canonical": ds.ids}
+            data = {"SMILES": ds.ids}
             for i, task in enumerate(task_list):
                 data[task] = ds.y[:, i]
             return pd.DataFrame(data)

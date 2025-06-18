@@ -11,6 +11,7 @@ import joblib
 import pandas as pd
 import numpy as np
 import argparse
+import traceback
 import h5py
 from transformers import AutoTokenizer, AutoModel
 from rich.console import Console
@@ -37,26 +38,30 @@ console = Console()
 
 
 def predict_smiles(
-    smiles_list: List[str],
+    input_df: pd.DataFrame,
     checkpoint_dir: str,
     batch_size: int = 200,
     temp_dir: str = None,
 ) -> pd.DataFrame:
     """
-    Core API function to run inference on a list of SMILES strings.
+    Core API function to run inference on a DataFrame containing SMILES strings.
 
     Args:
-        smiles_list (List[str]): A list of SMILES strings to predict on.
+        input_df (pd.DataFrame): A DataFrame that must contain a 'SMILES' column.
+                                 All other columns will be preserved in the output.
         checkpoint_dir (str): Path to the directory containing the trained 'best_model.pt' and scaler.
         batch_size (int, optional): Batch size for inference. Defaults to 200.
         temp_dir (str, optional): A directory for temporary featurization files.
                                   If None, a temp folder is created inside the checkpoint_dir.
 
     Returns:
-        pd.DataFrame: A DataFrame containing the input SMILES and their predictions
+        pd.DataFrame: A DataFrame containing all original columns plus the predictions
                       (both probability scores and binary labels).
     """
     console.rule("[bold green]Starting CAGE-Fusion Prediction[/bold green]")
+
+    if "SMILES" not in input_df.columns:
+        raise ValueError("Input DataFrame must contain a 'SMILES' column.")
 
     # === 1. Load config and checkpoint ===
     best_model_path = os.path.join(checkpoint_dir, "best_model.pt")
@@ -95,7 +100,7 @@ def predict_smiles(
     logger.info("Model and necessary components loaded.")
 
     # === 3. Featurize the input SMILES ===
-    df = pd.DataFrame({"SMILES_Canonical": smiles_list})
+    df = input_df.copy().reset_index().rename(columns={"index": "original_index"})
     dummy_labels = [tasks[0]] if tasks else ["Label"]
 
     if temp_dir:
@@ -115,7 +120,7 @@ def predict_smiles(
         tokenizer=tokenizer,
         model=embedding_model,
         fit_scaler=False,
-        scaler=scaler,
+        scaler=scaler
     )
 
     final_graph_path = os.path.join(temp_features_dir, "inference_graph_feats.pkl")
@@ -154,26 +159,40 @@ def predict_smiles(
             all_preds.append(preds)
 
     # === 5. Format Output ===
-    pred_df = df.copy()
+    output_df = input_df.copy()  # Start with the original input
     if all_preds:
         all_preds_np = np.concatenate(all_preds, axis=0)
 
-        # This logic handles cases where some SMILES might be dropped by the featurizer
+        # This logic robustly handles cases where some SMILES might be dropped during featurization.
         with h5py.File(h5_path, "r") as f:
+            # The featurizer MUST save the original dataframe indices of the successfully processed molecules.
             if "original_indices" in f:
                 valid_indices = f["original_indices"][:]
-                results_df = df.iloc[valid_indices].copy()
+                # Create a temporary DataFrame with predictions for successfully featurized SMILES
+                results_df = pd.DataFrame(index=valid_indices)
                 for idx, task in enumerate(tasks):
                     results_df[f"pred_score_{task}"] = all_preds_np[:, idx]
                     results_df[f"pred_label_{task}"] = (
                         all_preds_np[:, idx] > best_thresholds[idx]
                     ).astype(int)
-                # Merge results back to the original DataFrame
-                pred_df = df.merge(results_df, on="SMILES_Canonical", how="left")
-            else:
-                logger.warning(
-                    "Could not find 'original_indices' in HDF5 file. Predictions may not align if SMILES were dropped."
+
+                # Merge results back into the original DataFrame, keeping all original rows and columns
+                output_df = output_df.merge(
+                    results_df, left_index=True, right_index=True, how="left"
                 )
+            else:
+                # Fallback logic if original_indices isn't saved (less robust)
+                logger.warning(
+                    "Could not find 'original_indices' in HDF5 file. Assuming no SMILES were dropped."
+                )
+                if len(output_df) == len(all_preds_np):
+                    for idx, task in enumerate(tasks):
+                        output_df[f"pred_score_{task}"] = all_preds_np[:, idx]
+                        output_df[f"pred_label_{task}"] = (
+                            all_preds_np[:, idx] > best_thresholds[idx]
+                        ).astype(int)
+                else:
+                    logger.error("Prediction alignment failed. Cannot merge results.")
 
     # Clean up
     try:
@@ -182,7 +201,7 @@ def predict_smiles(
     except Exception as e:
         logger.warning(f"Could not remove temp features dir: {e}")
 
-    return pred_df
+    return output_df
 
 
 def main():
@@ -193,7 +212,7 @@ def main():
     parser.add_argument(
         "--csv",
         required=True,
-        help="Path to input CSV (must contain SMILES_Canonical column)",
+        help="Path to input CSV (must contain a 'SMILES' column)",
     )
     parser.add_argument(
         "--checkpoint-dir",
@@ -214,12 +233,10 @@ def main():
     args = parser.parse_args()
 
     try:
-        smiles_df = pd.read_csv(args.csv)
-        if "SMILES_Canonical" not in smiles_df.columns:
-            raise ValueError("Input CSV must contain a 'SMILES_Canonical' column.")
+        input_df = pd.read_csv(args.csv)
 
         predictions_df = predict_smiles(
-            smiles_list=smiles_df["SMILES_Canonical"].tolist(),
+            input_df=input_df,
             checkpoint_dir=args.checkpoint_dir,
             batch_size=args.batch_size,
             temp_dir=args.temp_dir,
