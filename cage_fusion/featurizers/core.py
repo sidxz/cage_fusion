@@ -4,6 +4,7 @@ import h5py
 import joblib
 import pandas as pd
 import numpy as np
+import glob
 import torch
 from tqdm import tqdm
 from sklearn.preprocessing import StandardScaler
@@ -156,5 +157,15 @@ def featurize_and_save_streaming(
         except NotFittedError as e:
             logger.error("Scaler must be fitted before normalization.")
             raise e
+        
+    # ---- Combine part files here ----
+    glob_pattern = graph_path_base + "_*.pkl"
+    combined_graph_path = os.path.join(cache_dir, f"{name}_graph_feats.pkl")
+    part_files = sorted(glob.glob(glob_pattern))
+    if not part_files:
+        raise FileNotFoundError(f"No graph part files found: {glob_pattern}")
+    logger.info(f"Combining {len(part_files)} graph parts into {combined_graph_path} ...")
+    all_feats = [feat for pf in part_files for feat in joblib.load(pf)]
+    joblib.dump(all_feats, combined_graph_path, compress=3)
 
     return h5_path, graph_path_base + "_*.pkl", final_scaler

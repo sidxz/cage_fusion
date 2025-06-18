@@ -2,10 +2,6 @@
 
 """
 Script to run MoleculeNet benchmark for CAGE-Fusion model.
-
-Best practices:
-- All directory paths and configurable values at the top.
-- Logging, error handling, and readability improved.
 """
 
 import os
@@ -31,6 +27,7 @@ OUTPUT_ROOT = "output"
 DEFAULT_DATASET = "bace_classification"
 DEFAULT_SEED = 42
 DEFAULT_FORCE_RERUN = False
+DEFAULT_RERUN_TRAIN = False
 DEFAULT_SPLITTER = "scaffold"
 DEFAULT_BATCH_SIZE = 200
 DEFAULT_NUM_EPOCHS = 2
@@ -141,18 +138,6 @@ def load_moleculenet_dataset(dataset_name, data_dir, seed, splitter):
         sys.exit(1)
 
 
-def combine_graph_parts(glob_pattern, output_path):
-    """
-    Combine pickled feature parts into a single file.
-    """
-    part_files = sorted(glob.glob(glob_pattern))
-    if not part_files:
-        raise FileNotFoundError(f"No graph part files found: {glob_pattern}")
-    logger.info(f"Combining {len(part_files)} graph parts...")
-    all_feats = [feat for pf in part_files for feat in joblib.load(pf)]
-    joblib.dump(all_feats, output_path, compress=3)
-
-
 def run_final_evaluation(checkpoint_path, title, test_loader, device, cache_dir):
     """
     Load model from checkpoint and evaluate on test set.
@@ -173,17 +158,17 @@ def run_final_evaluation(checkpoint_path, title, test_loader, device, cache_dir)
     logger.info(f"Loaded {title} model from epoch {checkpoint['epoch']}")
 
     criterion = torch.nn.BCEWithLogitsLoss()
-    (
-        test_loss, test_mcc, test_auc, test_pr, _, per_task_metrics, _, _, _
-    ) = evaluate_model(
-        model=model,
-        loader=test_loader,
-        criterion=criterion,
-        device=device,
-        num_tasks=config["num_tasks"],
-        label_names=config["tasks"],
-        use_precomputed_thresholds=best_thresholds,
-        cache_dir=os.path.join(cache_dir, f"test_eval_{title.lower()}"),
+    (test_loss, test_mcc, test_auc, test_pr, _, per_task_metrics, _, _, _) = (
+        evaluate_model(
+            model=model,
+            loader=test_loader,
+            criterion=criterion,
+            device=device,
+            num_tasks=config["num_tasks"],
+            label_names=config["tasks"],
+            use_precomputed_thresholds=best_thresholds,
+            cache_dir=os.path.join(cache_dir, f"test_eval_{title.lower()}"),
+        )
     )
 
     console.rule(f"[bold magenta]Final Test Set Results ({title})")
@@ -201,21 +186,20 @@ def run_final_evaluation(checkpoint_path, title, test_loader, device, cache_dir)
         console.print(task_table)
 
 
-def run_benchmark(dataset_name, seed, force_rerun, splitter):
+def run_benchmark(dataset_name, seed, force_rerun, rerun_train, splitter):
     """
     Main pipeline for running the CAGE-Fusion benchmark.
     """
     # Directory for this run
     config = get_default_config()
-    
+
     run_id = f"{dataset_name}_seed{seed}"
-    
+
     config["base_cache_dir"] = os.path.join(CACHE_ROOT, run_id)
     config["features_dir"] = os.path.join(FEATURES_ROOT, run_id)
     config["checkpoints_dir"] = os.path.join(CHECKPOINTS_ROOT, run_id)
     config["data_dir"] = os.path.join(DATA_DIR, dataset_name)
     config["output_dir"] = os.path.join(OUTPUT_ROOT, run_id)
-
 
     console.rule(
         f"[bold cyan]MoleculeNet Benchmark: {dataset_name} (Seed: {seed}), Force Rerun: {force_rerun}, Splitter: {splitter}"
@@ -225,13 +209,37 @@ def run_benchmark(dataset_name, seed, force_rerun, splitter):
     # Optionally clear cache and checkpoints
     if force_rerun:
         if os.path.exists(config["base_cache_dir"]):
-            logger.warning(f"Force rerun enabled. Deleting cache: {config['base_cache_dir']}")
+            logger.warning(
+                f"Force rerun enabled. Deleting cache: {config['base_cache_dir']}"
+            )
             shutil.rmtree(config["base_cache_dir"])
         if os.path.exists(config["features_dir"]):
-            logger.warning(f"Force rerun enabled. Deleting features: {config['features_dir']}")
+            logger.warning(
+                f"Force rerun enabled. Deleting features: {config['features_dir']}"
+            )
             shutil.rmtree(config["features_dir"])
         if os.path.exists(config["checkpoints_dir"]):
-            logger.warning(f"Force rerun enabled. Deleting checkpoints: {config['checkpoints_dir']}")
+            logger.warning(
+                f"Force rerun enabled. Deleting checkpoints: {config['checkpoints_dir']}"
+            )
+            shutil.rmtree(config["checkpoints_dir"])
+
+    if rerun_train:
+        # check if features dir exists, if not, error out
+        if not os.path.exists(config["features_dir"]):
+            logger.error(
+                f"Cannot rerun training without existing features. Please run with --force-rerun to regenerate features."
+            )
+            sys.exit(1)
+        if os.path.exists(config["base_cache_dir"]):
+            logger.warning(
+                f"Force rerun enabled. Deleting cache: {config['base_cache_dir']}"
+            )
+            shutil.rmtree(config["base_cache_dir"])
+        if os.path.exists(config["checkpoints_dir"]):
+            logger.warning(
+                f"Rerun training enabled. Deleting checkpoints: {config['checkpoints_dir']}"
+            )
             shutil.rmtree(config["checkpoints_dir"])
 
     # Create fresh dirs if needed
@@ -246,13 +254,12 @@ def run_benchmark(dataset_name, seed, force_rerun, splitter):
         dataset_name=dataset_name,
         data_dir=config["data_dir"],
         seed=seed,
-        splitter=splitter
+        splitter=splitter,
     )
-    
 
     config["num_tasks"] = len(tasks)
     config["tasks"] = tasks
-    
+
     config["batch_size"] = DEFAULT_BATCH_SIZE
     config["num_epochs"] = DEFAULT_NUM_EPOCHS
     config["learning_rate"] = DEFAULT_LR
@@ -279,15 +286,11 @@ def run_benchmark(dataset_name, seed, force_rerun, splitter):
             scaler = scaler_obj
         h5_paths[split], glob_paths[split] = h5, glob_p
 
-    for split, glob_p in glob_paths.items():
-        combine_graph_parts(
-            glob_p, os.path.join(config["features_dir"], f"{split}_graph_feats.pkl")
-        )
-
     g = torch.Generator().manual_seed(seed)
     train_loader = torch.utils.data.DataLoader(
         CageFusionStreamingDataset(
-            h5_paths["train"], os.path.join(config["features_dir"], f"train_graph_feats.pkl")
+            h5_paths["train"],
+            os.path.join(config["features_dir"], f"train_graph_feats.pkl"),
         ),
         batch_size=config["batch_size"],
         collate_fn=collate_fn_for_cage_fusion,
@@ -296,7 +299,8 @@ def run_benchmark(dataset_name, seed, force_rerun, splitter):
     )
     val_loader = torch.utils.data.DataLoader(
         CageFusionStreamingDataset(
-            h5_paths["val"], os.path.join(config["features_dir"], f"val_graph_feats.pkl")
+            h5_paths["val"],
+            os.path.join(config["features_dir"], f"val_graph_feats.pkl"),
         ),
         batch_size=config["batch_size"],
         shuffle=False,
@@ -304,7 +308,8 @@ def run_benchmark(dataset_name, seed, force_rerun, splitter):
     )
     test_loader = torch.utils.data.DataLoader(
         CageFusionStreamingDataset(
-            h5_paths["test"], os.path.join(config["features_dir"], f"test_graph_feats.pkl")
+            h5_paths["test"],
+            os.path.join(config["features_dir"], f"test_graph_feats.pkl"),
         ),
         batch_size=config["batch_size"],
         collate_fn=collate_fn_for_cage_fusion,
@@ -380,13 +385,22 @@ def parse_args():
         help="Name of the MoleculeNet dataset to use.",
     )
     parser.add_argument(
-        "--seed", type=int, default=DEFAULT_SEED, help="Random seed for reproducibility."
+        "--seed",
+        type=int,
+        default=DEFAULT_SEED,
+        help="Random seed for reproducibility.",
     )
     parser.add_argument(
         "--force-rerun",
         action="store_true",
         default=DEFAULT_FORCE_RERUN,
         help="Force rerunning by deleting cache and checkpoints.",
+    )
+    parser.add_argument(
+        "--rerun-train",
+        action="store_true",
+        default=DEFAULT_RERUN_TRAIN,
+        help="Rerun training only, skipping featurization.",
     )
     parser.add_argument(
         "--splitter",
@@ -400,4 +414,10 @@ def parse_args():
 
 if __name__ == "__main__":
     args = parse_args()
-    run_benchmark(args.dataset, args.seed, args.force_rerun, args.splitter)
+    run_benchmark(
+        dataset_name=args.dataset,
+        seed=args.seed,
+        force_rerun=args.force_rerun,
+        rerun_train=args.rerun_train,
+        splitter=args.splitter,
+    )
