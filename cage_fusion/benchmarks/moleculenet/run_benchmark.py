@@ -30,8 +30,8 @@ DEFAULT_FORCE_RERUN = False
 DEFAULT_RERUN_TRAIN = False
 DEFAULT_SPLITTER = "scaffold"
 DEFAULT_BATCH_SIZE = 200
-DEFAULT_NUM_EPOCHS = 2
-DEFAULT_LR = 4e-3
+DEFAULT_NUM_EPOCHS = 15
+DEFAULT_LR = 4e-5
 DEFAULT_WARMUP_FRAC = 0.1
 MODEL_BEST = "best_model.pt"
 MODEL_LATEST = "latest_checkpoint.pt"
@@ -271,7 +271,9 @@ def run_benchmark(dataset_name, seed, force_rerun, rerun_train, splitter):
 
     h5_paths, glob_paths = {}, {}
     scaler = None
-    for split, df in [("train", df_train), ("val", df_val), ("test", df_test)]:
+    for split, df_original in [("train", df_train), ("val", df_val), ("test", df_test)]:
+        df = df_original.copy().reset_index().rename(columns={"index": "original_index"})
+
         h5, glob_p, scaler_obj = featurize_and_save_streaming(
             df=df,
             name=split,
