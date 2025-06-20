@@ -26,8 +26,8 @@ def get_default_config():
         "num_heads": 8,                      # Number of attention heads
         "cross_attn_dropout": 0.1,           # Dropout rate in cross-attention
         "proj_dropout": 0.1,                 # Dropout rate in projection layers
-        "use_atom_level_queries": True,      # Enable atom-level querying
-        "use_advanced_features": True,       # Include additional advanced features
+        "graph_only_mode": False,            # Use only graph features without token embeddings
+        "use_co_attention": True,            # Use Co-Attention mechanism
 
         # === Training Hyperparameters ===
         "learning_rate": 3e-4,               # Learning rate for the optimizer

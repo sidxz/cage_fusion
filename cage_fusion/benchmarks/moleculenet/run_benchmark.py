@@ -29,13 +29,14 @@ DEFAULT_SEED = 42
 DEFAULT_FORCE_RERUN = False
 DEFAULT_RERUN_TRAIN = False
 DEFAULT_SPLITTER = "scaffold"
-DEFAULT_BATCH_SIZE = 64
+DEFAULT_BATCH_SIZE = 256
 DEFAULT_NUM_EPOCHS = 25
-DEFAULT_LR = 0.000391
+DEFAULT_LR = 1e-5
 DEFAULT_WARMUP_FRAC = 0.1
 MODEL_BEST = "best_model.pt"
 MODEL_LATEST = "latest_checkpoint.pt"
 MIN_TOKEN_FREQ = 10
+GRAPH_ONLY_MODE = False  # Set to True to run in graph-only mode
 
 # ======== Project Path Setup ========
 project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
@@ -192,6 +193,9 @@ def run_benchmark(dataset_name, seed, force_rerun, rerun_train, splitter):
     """
     # Directory for this run
     config = get_default_config()
+    
+    #GRAPH_ONLY_MODE
+    config["graph_only_mode"] = GRAPH_ONLY_MODE
 
     run_id = f"{dataset_name}_seed{seed}"
 
