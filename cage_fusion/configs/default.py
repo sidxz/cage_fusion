@@ -35,7 +35,12 @@ def get_default_config():
         "batch_size": 192,                   # Number of samples per batch
         "warmup_fraction": 0.2,              # Warmup steps as a fraction of total steps
         "clip_grad_norm": 1.0,               # Gradient clipping to prevent exploding gradients
-
+        
+        # Scaled Attention Factor
+        "scaled_graph_factor": 1.0,      # Scaling factor for attention scores
+        "scale_attn_factor": 0.5,        # Scaling factor for attention scores
+        "scale_aux_factor": 0.1,        # Scaling factor for auxiliary features
+        
         # === Attention Regularization ===
         "lambda_entropy": 0.001,             # Entropy loss weight for attention sparsity
         "lambda_prior": 0.000,                # Prior loss weight using token importance

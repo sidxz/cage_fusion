@@ -111,10 +111,20 @@ class CAGEFusionModel(nn.Module):
                 activation="ReLU",
             )
             # Add placeholder attributes for logging consistency
-            self.scale_graph = nn.Parameter(torch.tensor(1.0), requires_grad=False)
-            self.scale_attn = nn.Parameter(torch.tensor(0.0), requires_grad=False)
-            self.scale_aux = nn.Parameter(torch.tensor(0.0), requires_grad=False)
-
+            scaled_graph_factor = config.get("scaled_graph_factor", 1.0)
+            self.scale_graph = nn.Parameter(
+                torch.tensor(scaled_graph_factor), requires_grad=False
+            )
+            scale_attn_factor = config.get("scale_attn_factor", 0.05)
+            self.scale_attn = nn.Parameter(
+                torch.tensor(scale_attn_factor), requires_grad=False
+            )
+            scale_aux_factor = config.get("scale_aux_factor", 0.1)
+            self.aux_feature_dim = config.get("aux_feature_dim", 0)
+            logger.info(
+                "Graph-only predictor initialized with scaled factors: "
+                f"graph={self.scale_graph.item()}, attn={self.scale_attn.item()}, aux={self.scale_aux.item()}"
+            )
             logger.info("Model initialized in GRAPH-ONLY mode (Chemprop architecture).")
             return  # Skip initializing fusion components if in graph-only mode
 
