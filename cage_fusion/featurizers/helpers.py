@@ -26,6 +26,9 @@ def initialize_hdf5_file(h5_path, num_samples, seq_len, embed_dim, aux_dim, num_
         f.create_dataset(
             "auxiliary_features", shape=(num_samples, aux_dim), dtype=np.float32
         )
+        # f.create_dataset(
+        #     "auxiliary_features_normalized", shape=(num_samples, aux_dim), dtype=np.float32
+        # )
         f.create_dataset("labels", shape=(num_samples, num_labels), dtype=np.float32)
         f.create_dataset("original_indices", shape=(num_samples,), dtype=np.int64)
     logger.info(f"Initialized HDF5 file at {h5_path}")
@@ -46,6 +49,7 @@ def featurize_batch(tokenizer, model, smiles_batch, seq_len, device, vocab_size)
     Returns:
         Tuple[np.ndarray, np.ndarray]: Token IDs and embedding tensors (on CPU).
     """
+    #logger.info(f"Featurizing {len(smiles_batch)} SMILES strings...")
     inputs = tokenizer(
         smiles_batch,
         return_tensors="pt",
@@ -65,7 +69,7 @@ def featurize_batch(tokenizer, model, smiles_batch, seq_len, device, vocab_size)
 
     if torch.isnan(embeddings).any() or torch.isinf(embeddings).any():
         raise ValueError("Embeddings contain NaN or Inf.")
-
+    #logger.info("Featurization complete.")
     return input_ids.cpu().numpy(), embeddings.cpu().numpy()
 
 
@@ -99,6 +103,7 @@ def process_auxiliary_features(
     Returns:
         List: Updated graph_feats list.
     """
+    #logger.info(f"Processing auxiliary features batch of size {len(batch_df)}")
     batch_aux = []
     for j, row in batch_df.iterrows():
         idx = i_offset + (j - batch_df.index[0])
@@ -127,7 +132,7 @@ def process_auxiliary_features(
 
     if fit_scaler and batch_aux:
         scaler.partial_fit(np.array(batch_aux))
-
+    #logger.info("Auxiliary features processed.")
     return graph_feats
 
 
@@ -158,6 +163,7 @@ def normalize_auxiliary_features(
         batch_size (int): Batch size for normalization.
         name (str): Name label for logging.
     """
+    logger.info(f"Normalizing auxiliary features in {h5_path} ...")
     with h5py.File(h5_path, "a") as f:
         N = f["auxiliary_features"].shape[0]
 

@@ -18,7 +18,7 @@ from rich.console import Console
 from rich.traceback import install
 import shutil
 from tqdm import tqdm
-from typing import List
+from typing import List, Optional
 
 # Add project root to the Python path
 project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
@@ -30,7 +30,7 @@ from cage_fusion.featurizers import featurize_and_save_streaming
 from cage_fusion.models import CAGEFusionModel
 from cage_fusion.engine.dataset import CageFusionStreamingDataset
 from cage_fusion.engine.data_utils import collate_fn_for_cage_fusion
-from cage_fusion.engine.utils import move_bmg_to_device
+from cage_fusion.engine.utils import move_bmg_to_device, visualize_attention_weights
 from cage_fusion.utils.logging_utils import logger
 
 install()
@@ -42,21 +42,11 @@ def predict_smiles(
     checkpoint_dir: str,
     batch_size: int = 200,
     temp_dir: str = None,
+    plot_all_attention: bool = False,
+    attn_plot_dir: Optional[str] = None,
 ) -> pd.DataFrame:
     """
     Core API function to run inference on a DataFrame containing SMILES strings.
-
-    Args:
-        input_df (pd.DataFrame): A DataFrame that must contain a 'SMILES' column.
-                                 All other columns will be preserved in the output.
-        checkpoint_dir (str): Path to the directory containing the trained 'best_model.pt' and scaler.
-        batch_size (int, optional): Batch size for inference. Defaults to 200.
-        temp_dir (str, optional): A directory for temporary featurization files.
-                                  If None, a temp folder is created inside the checkpoint_dir.
-
-    Returns:
-        pd.DataFrame: A DataFrame containing all original columns plus the predictions
-                      (both probability scores and binary labels).
     """
     console.rule("[bold green]Starting CAGE-Fusion Prediction[/bold green]")
 
@@ -97,6 +87,14 @@ def predict_smiles(
         AutoModel.from_pretrained(config["model_checkpoint"]).to(device).eval()
     )
     scaler = joblib.load(scaler_path)
+    # --- ADDED: Scaler Sanity Check ---
+    if scaler and hasattr(scaler, "mean_"):
+        logger.info(f"Scaler loaded successfully. Type: {type(scaler)}")
+        logger.info(f"Scaler is FITTED. Mean shape: {scaler.mean_.shape}")
+    else:
+        logger.error("SCALER IS NOT VALID. It might be None or unfitted.")
+        raise ValueError("Failed to load a valid, fitted scaler.")
+    # ------------------------------------
     logger.info("Model and necessary components loaded.")
 
     # === 3. Featurize the input SMILES ===
@@ -120,7 +118,7 @@ def predict_smiles(
         tokenizer=tokenizer,
         model=embedding_model,
         fit_scaler=False,
-        scaler=scaler
+        scaler=scaler,
     )
 
     final_graph_path = os.path.join(temp_features_dir, "inference_graph_feats.pkl")
@@ -135,6 +133,11 @@ def predict_smiles(
     # === 4. Predict ===
     logger.info("Running model predictions...")
     all_preds = []
+    sample_idx_offset = 0
+    if plot_all_attention:
+        os.makedirs(attn_plot_dir, exist_ok=True)
+        logger.info(f"Plotting all attentions to: {attn_plot_dir}")
+
     with torch.no_grad():
         for i, batch in enumerate(tqdm(loader, desc="Predicting")):
             if batch[0] is None:
@@ -146,55 +149,89 @@ def predict_smiles(
             token_embs, attn_mask = token_embs.to(device), attn_mask.to(device)
             aux_feats, input_ids = aux_feats.to(device), input_ids.to(device)
 
+            # --- DEBUG: Sanity check inputs for the first batch ---
+            if i == 0:
+                logger.info("--- First Batch Sanity Check ---")
+                logger.info(f"Token Embeddings Shape: {token_embs.shape}")
+                logger.info(f"Token Embeddings Stats: Min={token_embs.min():.4f}, Max={token_embs.max():.4f}, Mean={token_embs.mean():.4f}")
+                logger.info(f"Auxiliary Features Shape: {aux_feats.shape}")
+                logger.info(f"Auxiliary Features Stats: Min={aux_feats.min():.4f}, Max={aux_feats.max():.4f}, Mean={aux_feats.mean():.4f}, Std={aux_feats.std():.4f}")
+                logger.info(f"Input IDs example: {input_ids[0][:15]}...")
+                logger.info(f"Attention Mask example: {attn_mask[0][:15]}...")
+            # ----------------------------------------------------
+
             model_output = model(
                 bmg=bmg,
                 sequence_embeddings=token_embs,
                 attn_mask=attn_mask,
                 aux_feats=aux_feats,
                 input_ids_batch=input_ids,
-                return_attn=False,
+                return_attn=plot_all_attention,
             )
-            logits = model_output[0]
+            logits, _, _, attn_weights, _, _ = model_output
+
+            # --- DEBUG: Sanity check model outputs for the first batch ---
+            if i == 0:
+                logger.info(f"Logits Shape: {logits.shape}")
+                logger.info(f"Logits Stats: Min={logits.min():.4f}, Max={logits.max():.4f}, Mean={logits.mean():.4f}")
+            # -----------------------------------------------------------
+            
             preds = torch.sigmoid(logits).cpu().numpy()
             all_preds.append(preds)
+            
+            # --- DEBUG: Sanity check final probabilities for the first batch ---
+            if i == 0:
+                logger.info(f"Probabilities (first 5): {preds[:5].flatten()}")
+                logger.info("---------------------------------")
+            # -----------------------------------------------------------------
+
+            if plot_all_attention and attn_weights is not None:
+                for j in range(len(input_ids)):
+                    with h5py.File(h5_path, "r") as f:
+                        original_idx = f["original_indices"][sample_idx_offset + j]
+
+                    smiles_str = tokenizer.decode(
+                        input_ids[j], skip_special_tokens=True
+                    )
+                    safe_smiles_fname = "".join(c for c in smiles_str if c.isalnum())[
+                        :50
+                    ]
+                    plot_path = os.path.join(
+                        attn_plot_dir,
+                        f"attn_original-idx_{original_idx}_{safe_smiles_fname}.png",
+                    )
+
+                    visualize_attention_weights(
+                        attn_weights[j],
+                        attn_mask[j],
+                        model.num_heads,
+                        output_path=plot_path,
+                        input_ids=input_ids[j],
+                        tokenizer_obj=tokenizer,
+                    )
+            sample_idx_offset += len(input_ids)
+
 
     # === 5. Format Output ===
-    output_df = input_df.copy()  # Start with the original input
+    output_df = input_df.copy()
     if all_preds:
         all_preds_np = np.concatenate(all_preds, axis=0)
-
-        # This logic robustly handles cases where some SMILES might be dropped during featurization.
         with h5py.File(h5_path, "r") as f:
-            # The featurizer MUST save the original dataframe indices of the successfully processed molecules.
             if "original_indices" in f:
                 valid_indices = f["original_indices"][:]
-                # Create a temporary DataFrame with predictions for successfully featurized SMILES
                 results_df = pd.DataFrame(index=valid_indices)
                 for idx, task in enumerate(tasks):
                     results_df[f"pred_score_{task}"] = all_preds_np[:, idx]
                     results_df[f"pred_label_{task}"] = (
                         all_preds_np[:, idx] > best_thresholds[idx]
                     ).astype(int)
-
-                # Merge results back into the original DataFrame, keeping all original rows and columns
                 output_df = output_df.merge(
                     results_df, left_index=True, right_index=True, how="left"
                 )
             else:
-                # Fallback logic if original_indices isn't saved (less robust)
-                logger.warning(
-                    "Could not find 'original_indices' in HDF5 file. Assuming no SMILES were dropped."
-                )
-                if len(output_df) == len(all_preds_np):
-                    for idx, task in enumerate(tasks):
-                        output_df[f"pred_score_{task}"] = all_preds_np[:, idx]
-                        output_df[f"pred_label_{task}"] = (
-                            all_preds_np[:, idx] > best_thresholds[idx]
-                        ).astype(int)
-                else:
-                    logger.error("Prediction alignment failed. Cannot merge results.")
+                logger.error("Critical: 'original_indices' not found in HDF5. Cannot robustly merge results.")
 
-    # Clean up
+    # === 6. Clean up ===
     try:
         shutil.rmtree(temp_features_dir)
         logger.info(f"Cleaned up temporary directory: {temp_features_dir}")
@@ -230,6 +267,16 @@ def main():
         default=None,
         help="Optional path for temporary featurization files.",
     )
+    parser.add_argument(
+        "--plot-all-attention",
+        action='store_true',
+        help="If set, generate an attention plot for every SMILES in the input CSV."
+    )
+    parser.add_argument(
+        "--attn-plot-dir",
+        default="./attention_plots_prediction",
+        help="Directory to save the attention plots."
+    )
     args = parser.parse_args()
 
     try:
@@ -240,6 +287,8 @@ def main():
             checkpoint_dir=args.checkpoint_dir,
             batch_size=args.batch_size,
             temp_dir=args.temp_dir,
+            plot_all_attention=args.plot_all_attention,
+            attn_plot_dir=args.attn_plot_dir
         )
 
         predictions_df.to_csv(args.output, index=False)

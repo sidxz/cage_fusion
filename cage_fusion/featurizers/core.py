@@ -1,3 +1,5 @@
+# In cage_fusion/featurizers/core.py
+
 import os
 import gc
 import h5py
@@ -27,7 +29,6 @@ from .helpers import (
 def clean_descriptors(x: np.ndarray) -> np.ndarray:
     """Sanitize and clip descriptor values."""
     if np.isnan(x).any() or np.isinf(x).any():
-        # logger.warning("NaN or Inf found in auxiliary descriptors")
         x = np.nan_to_num(x, nan=0.0, posinf=1e4, neginf=-1e4)
     return np.clip(x, -1e4, 1e4)
 
@@ -64,9 +65,7 @@ def featurize_and_save_streaming(
     graph_featurizer = SimpleMoleculeMolGraphFeaturizer()
     D_aux_feats = len(descriptor_names)
 
-    # --- FIX: Ensure SMILES column is string type ---
     df["SMILES"] = df["SMILES"].astype(str)
-
     df["mol"] = df["SMILES"].apply(Chem.MolFromSmiles)
     if df["mol"].isnull().any():
         n_bad = df["mol"].isnull().sum()
@@ -87,14 +86,12 @@ def featurize_and_save_streaming(
             logger.warning(f"HDF5 issue for '{name}': {str(e)}. Re-running.")
             os.remove(h5_path)
 
-    # We'll return this scaler (for train: fitted, for val/test: unchanged)
     returned_scaler = scaler
 
     if run_featurization:
         logger.info(f"Running featurization for {N} samples (name='{name}')")
         initialize_hdf5_file(h5_path, N, D_seq_len, D_embedding, D_aux_feats, L)
 
-        # Use a fresh scaler if fitting, else use passed scaler
         current_scaler = StandardScaler() if fit_scaler else scaler
         graph_feats, graph_part = [], 0
 
@@ -146,25 +143,31 @@ def featurize_and_save_streaming(
         if graph_feats:
             save_graph_features(graph_feats, graph_path_base, graph_part)
 
-        # If we fit a scaler here (train), update returned_scaler to the fitted scaler
+        # --- THIS ENTIRE LOGIC BLOCK HAS BEEN SIMPLIFIED ---
+        logger.info("Determining scaler for normalization...")
         if fit_scaler:
+            # For training, the scaler we used for partial_fit is the one to use and return.
+            scaler_to_use = current_scaler
             returned_scaler = current_scaler
+            logger.info("Using the newly fitted scaler for normalization.")
+        else:
+            # For validation/prediction, use the pre-fitted scaler passed as an argument.
+            scaler_to_use = scaler
+            logger.info("Using the provided pre-fitted scaler for normalization.")
 
-    # Always normalize with the appropriate scaler after featurization
-    scaler_to_use = None
-    if fit_scaler and returned_scaler is not None:
-        scaler_to_use = returned_scaler
-    elif not fit_scaler and scaler is not None:
-        scaler_to_use = scaler
-
-    if scaler_to_use is not None:
-        try:
-            normalize_auxiliary_features(
-                h5_path, scaler_to_use, D_aux_feats, batch_size, name
-            )
-        except NotFittedError as e:
-            logger.error("Scaler must be fitted before normalization.")
-            raise e
+        if scaler_to_use is not None:
+            try:
+                normalize_auxiliary_features(
+                    h5_path, scaler_to_use, D_aux_feats, batch_size, name
+                )
+            except NotFittedError as e:
+                logger.error(
+                    "Scaler must be fitted before normalization. This should not happen in prediction mode."
+                )
+                raise e
+        else:
+            logger.warning("No scaler available. Skipping normalization.")
+        # ---------------------------------------------------
 
     # ---- Combine part files here ----
     glob_pattern = graph_path_base + "_*.pkl"
@@ -178,4 +181,5 @@ def featurize_and_save_streaming(
     all_feats = [feat for pf in part_files for feat in joblib.load(pf)]
     joblib.dump(all_feats, combined_graph_path, compress=3)
 
-    return h5_path, graph_path_base + "_*.pkl", returned_scaler
+    # --- MODIFIED: Return the final combined graph path ---
+    return h5_path, combined_graph_path, returned_scaler
