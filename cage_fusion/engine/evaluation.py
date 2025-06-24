@@ -118,6 +118,7 @@ def evaluate_model(
                     output_path=plot_path_g2t,
                     input_ids=input_ids_batch[random_sample_idx],
                     tokenizer_obj=tokenizer_obj,
+                    smiles=smiles_batch[random_sample_idx],
                 )
 
             # Plot 2: Visualize atom attention from the TOP-attended tokens

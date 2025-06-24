@@ -19,7 +19,8 @@ matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 import seaborn as sns
 from chemprop.data import BatchMolGraph
-from cage_fusion.utils.logging_utils import logger
+from ..utils.logging_utils import logger
+
 
 def visualize_attention_weights(
     attn_weights: torch.Tensor,
@@ -28,6 +29,7 @@ def visualize_attention_weights(
     output_path: str,
     input_ids: torch.Tensor = None,
     tokenizer_obj=None,
+    smiles: str = None,  # New argument to accept the SMILES string
 ):
     """
     Visualizes graph-to-token attention weights across heads.
@@ -66,6 +68,10 @@ def visualize_attention_weights(
     )
     axs = np.array(axs).reshape(num_rows, 2)
 
+    # --- ADDED: Display the SMILES string as a title ---
+    if smiles:
+        fig.suptitle(f"Graph-to-Token Attention for: {smiles}", fontsize=16)
+
     def plot_head(ax_row, data, title):
         sns.heatmap(
             data.reshape(1, -1), cmap="viridis", ax=ax_row[0], xticklabels=xtick_labels
@@ -80,7 +86,7 @@ def visualize_attention_weights(
         if not np.isnan(head_data).all():
             plot_head(axs[i + 1], head_data, f"Head {i}")
 
-    plt.tight_layout()
+    plt.tight_layout(rect=[0, 0, 1, 0.96])  # Adjust layout to make space for the title
     plt.savefig(output_path, dpi=300)
     plt.close(fig)
 
@@ -104,9 +110,10 @@ def visualize_top_token_attentions(
     if num_atoms == 0:
         return
 
-    # --- Step 1: Gather data for all individual plots ---
+    # --- Step 1: Gather data for all plots ---
     grid_plots_data = []
     combined_atom_weights = {i: 0.0 for i in range(num_atoms)}
+    all_source_atoms = set()
     attention_colormap = cm.get_cmap("Greens")
     source_token_color = (1.0, 0.0, 0.0)  # Red
 
@@ -126,6 +133,7 @@ def visualize_top_token_attentions(
             mol, token_str, top_atoms, weights, attention_colormap, source_token_color
         )
         grid_plots_data.append(plot_data)
+        all_source_atoms.update(plot_data["source_atoms"])
 
     # --- Step 2: Generate intermediate images ---
 
@@ -150,14 +158,16 @@ def visualize_top_token_attentions(
 
     # Image 2: Combined summary plot
     combined_img_path = os.path.join(output_dir, "temp_combined.png")
-    all_top_atoms = set(a for p in grid_plots_data for a in p["atoms"])
+    all_top_attention_atoms = set(a for p in grid_plots_data for a in p["top_atoms"])
+
     combined_data = _prepare_plot_data(
         mol,
         None,
-        list(all_top_atoms),
+        list(all_top_attention_atoms),
         np.array(list(combined_atom_weights.values())),
         attention_colormap,
-        None,
+        source_token_color,
+        all_source_atoms,
     )
 
     drawer = rdMolDraw2D.MolDraw2DCairo(800, 600)
@@ -184,7 +194,13 @@ def visualize_top_token_attentions(
 
 
 def _prepare_plot_data(
-    mol, token_str, top_atoms, weights, attention_cmap, source_color
+    mol,
+    token_str,
+    top_atoms,
+    weights,
+    attention_cmap,
+    source_color,
+    precomputed_source_atoms=None,
 ):
     """Helper to calculate highlight details for a single RDKit plot."""
     atom_colors = {}
@@ -193,7 +209,6 @@ def _prepare_plot_data(
     # Apply graded green color for top attention atoms
     if top_atoms:
         top_weights = weights[top_atoms]
-        # Normalize weights of top atoms for better color contrast
         norm_top_weights = (
             (top_weights - top_weights.min())
             / (top_weights.max() - top_weights.min() + 1e-8)
@@ -205,16 +220,25 @@ def _prepare_plot_data(
 
     # Apply red highlight for source token atoms, overwriting green if necessary
     source_atoms = set()
-    if token_str and source_color:
+    if precomputed_source_atoms is not None:
+        source_atoms = precomputed_source_atoms
+    elif token_str and source_color:
         try:
-            query_mol = Chem.MolFromSmarts(token_str)
+            smarts_query = (
+                f"[{token_str}]"
+                if len(token_str) == 1 and token_str.isalpha()
+                else token_str
+            )
+            query_mol = Chem.MolFromSmarts(smarts_query)
             if query_mol:
-                for match in mol.GetSubstructMatches(query_mol):
+                match = mol.GetSubstructMatch(query_mol)
+                if match:
                     source_atoms.update(match)
         except Exception:
             pass
-        for atom_idx in source_atoms:
-            atom_colors[atom_idx] = source_color
+
+    for atom_idx in source_atoms:
+        atom_colors[atom_idx] = source_color
 
     highlight_atoms = list(atom_colors.keys())
 
@@ -231,10 +255,12 @@ def _prepare_plot_data(
         begin_idx = mol.GetBondWithIdx(bond_idx).GetBeginAtomIdx()
         end_idx = mol.GetBondWithIdx(bond_idx).GetEndAtomIdx()
 
-        # If a bond connects two source atoms, it's red
-        if begin_idx in source_atoms and end_idx in source_atoms:
+        is_source_bond = begin_idx in source_atoms and end_idx in source_atoms
+        is_attention_bond = begin_idx in top_atoms and end_idx in top_atoms
+
+        if is_source_bond:
             bond_colors[bond_idx] = source_color
-        else:  # Otherwise, use the average color of the two atoms
+        elif is_attention_bond:
             c1 = mcolors.to_rgb(atom_colors.get(begin_idx, (1, 1, 1)))
             c2 = mcolors.to_rgb(atom_colors.get(end_idx, (1, 1, 1)))
             bond_colors[bond_idx] = tuple(np.mean([c1, c2], axis=0))
@@ -244,6 +270,8 @@ def _prepare_plot_data(
         "bonds": highlight_bonds,
         "atom_colors": atom_colors,
         "bond_colors": bond_colors,
+        "top_atoms": top_atoms,
+        "source_atoms": source_atoms,
     }
 
 
@@ -256,7 +284,7 @@ def _create_highlighted_smiles_image(full_token_list, top_token_indices, output_
 
     top_indices_set = set(top_token_indices)
     segments = [
-        (token, "blue" if i in top_indices_set else "black")
+        (token, "red" if i in top_indices_set else "black")
         for i, token in enumerate(full_token_list)
     ]
 
@@ -308,4 +336,3 @@ def _stitch_images(img1_path, img2_path, img3_path, output_dir):
         for p in [img1_path, img2_path, img3_path]:
             if os.path.exists(p):
                 os.remove(p)
-
