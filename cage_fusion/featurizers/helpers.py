@@ -31,6 +31,8 @@ def initialize_hdf5_file(h5_path, num_samples, seq_len, embed_dim, aux_dim, num_
         # )
         f.create_dataset("labels", shape=(num_samples, num_labels), dtype=np.float32)
         f.create_dataset("original_indices", shape=(num_samples,), dtype=np.int64)
+        string_dt = h5py.special_dtype(vlen=str)
+        f.create_dataset("smiles", shape=(num_samples,), dtype=string_dt, chunks=True)
     logger.info(f"Initialized HDF5 file at {h5_path}")
 
 
@@ -107,7 +109,7 @@ def process_auxiliary_features(
     batch_aux = []
     for j, row in batch_df.iterrows():
         idx = i_offset + (j - batch_df.index[0])
-        h5_file["original_indices"][idx] = row["original_index"]
+        #h5_file["original_indices"][idx] = row["original_index"]
         mol = row["mol"]
         graph_feats.append(graph_featurizer(mol))
 

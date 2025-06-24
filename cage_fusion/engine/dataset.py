@@ -11,6 +11,7 @@ class CageFusionStreamingDataset(Dataset):
     """
     Dataset for streaming token embeddings, auxiliary features, labels, and molecular graphs
     from disk using safe, per-instance HDF5 handles.
+    MODIFIED to also stream SMILES strings for interpretability analysis.
     """
 
     def __init__(self, h5_path: str, graph_path: str, tokenizer_pad_id: int = 0):
@@ -29,9 +30,10 @@ class CageFusionStreamingDataset(Dataset):
 
         # Validate dataset structure and get length
         with h5py.File(h5_path, "r") as f:
-            if "input_ids" not in f or "labels" not in f:
+            required_keys = ["input_ids", "labels", "smiles", "original_indices"]
+            if not all(key in f for key in required_keys):
                 raise KeyError(
-                    f"Missing required datasets ('input_ids' or 'labels') in: {h5_path}"
+                    f"HDF5 file at {h5_path} must contain all required keys: {required_keys}"
                 )
             self.length = f["labels"].shape[0]
 
@@ -56,12 +58,24 @@ class CageFusionStreamingDataset(Dataset):
 
     def __getitem__(self, idx: int) -> tuple:
         h5 = self._get_h5_file_handle()
+
+        # --- FIXED: Decode the SMILES string from bytes to a proper string ---
+        raw_smiles = h5["smiles"][idx]
+        # h5py often returns bytes; we decode to utf-8 for universal compatibility.
+        smiles_str = (
+            raw_smiles.decode("utf-8")
+            if isinstance(raw_smiles, bytes)
+            else str(raw_smiles)
+        )
+        # ---------------------------------------------------------------------
+
         return (
             self.graphs[idx],
             torch.tensor(h5["embedding"][idx], dtype=torch.float32),
             torch.tensor(h5["auxiliary_features_normalized"][idx], dtype=torch.float32),
             torch.tensor(h5["labels"][idx], dtype=torch.float32),
             torch.tensor(h5["input_ids"][idx], dtype=torch.long),
+            smiles_str,  # Return the properly decoded SMILES string
         )
 
     def __del__(self):
@@ -78,9 +92,7 @@ class CageFusionStreamingDataset(Dataset):
 class MiniBatchCacheDataset(Dataset):
     """
     Dataset wrapper that implements an LRU cache for recently accessed samples to reduce I/O.
-
-    This is particularly useful for scenarios where the same indices are repeatedly accessed
-    across different epochs or batches (e.g., in evaluation or shuffling with replacement).
+    This class does not need to be changed.
     """
 
     def __init__(self, dataset: Dataset, cache_size: int = 1024):
@@ -100,7 +112,6 @@ class MiniBatchCacheDataset(Dataset):
         self.cache[idx] = item
         self.cache.move_to_end(idx)
 
-        # Maintain LRU cache by popping oldest entry if over capacity
         if len(self.cache) > self.cache_size:
             self.cache.popitem(last=False)
 

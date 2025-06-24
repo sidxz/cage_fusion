@@ -32,7 +32,7 @@ def collate_fn_for_cage_fusion(batch):
     """
     try:
         # Unzip batch into individual components
-        mol_graphs, embeddings, aux_features, labels, input_ids_list = zip(*batch)
+        mol_graphs, embeddings, aux_features, labels, input_ids_list, smiles = zip(*batch)
 
         # Create a batched molecular graph
         batched_graph = BatchMolGraph(list(mol_graphs))
@@ -62,6 +62,8 @@ def collate_fn_for_cage_fusion(batch):
         # Stack auxiliary features and labels into tensors
         aux_features_tensor = torch.stack(aux_features)
         labels_tensor = torch.stack(labels)
+        
+        smiles_list = list(smiles)
 
         return (
             batched_graph,
@@ -70,6 +72,7 @@ def collate_fn_for_cage_fusion(batch):
             aux_features_tensor,
             labels_tensor,
             padded_input_ids,
+            smiles_list,
         )
 
     except Exception as e:

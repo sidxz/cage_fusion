@@ -64,6 +64,11 @@ def featurize_and_save_streaming(
     desc_calc = MoleculeDescriptors.MolecularDescriptorCalculator(descriptor_names)
     graph_featurizer = SimpleMoleculeMolGraphFeaturizer()
     D_aux_feats = len(descriptor_names)
+    
+    # --- ENSURE `original_index` is present BEFORE dropping NaNs ---
+    if "original_index" not in df.columns:
+        df = df.copy().reset_index().rename(columns={"index": "original_index"})
+    # ------------------------------------------------------------
 
     df["SMILES"] = df["SMILES"].astype(str)
     df["mol"] = df["SMILES"].apply(Chem.MolFromSmiles)
@@ -98,6 +103,7 @@ def featurize_and_save_streaming(
         for i in tqdm(range(0, N, batch_size), desc=f"Featurizing {name}"):
             batch_df = df.iloc[i : i + batch_size]
             smiles_batch = batch_df["SMILES"].tolist()
+            original_indices_batch = batch_df["original_index"].tolist()
 
             try:
                 input_ids, embeddings = featurize_batch(
@@ -106,6 +112,8 @@ def featurize_and_save_streaming(
                 with h5py.File(h5_path, "a") as f:
                     f["input_ids"][i : i + len(batch_df)] = input_ids
                     f["embedding"][i : i + len(batch_df)] = embeddings
+                    f["smiles"][i : i + len(batch_df)] = smiles_batch
+                    f["original_indices"][i : i + len(batch_df)] = original_indices_batch
 
             except Exception as e:
                 logger.error(f"Batch {i}-{i + batch_size} failed: {str(e)}")
