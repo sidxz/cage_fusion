@@ -255,7 +255,8 @@ def run_benchmark(dataset_name, seed, force_rerun, rerun_train, splitter):
             logger.warning(
                 f"Rerun training enabled. Deleting checkpoints: {config['checkpoints_dir']}"
             )
-            shutil.rmtree(config["checkpoints_dir"])
+            for pt_file in glob.glob(os.path.join(config["checkpoints_dir"], "*.pt")):
+                os.remove(pt_file)
 
     # Create fresh dirs if needed
     os.makedirs(config["data_dir"], exist_ok=True)
