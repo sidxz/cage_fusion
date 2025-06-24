@@ -9,8 +9,11 @@ from .metrics import (
     MCCBatchAggregatorToDisk,
     PRBatchAggregatorToDisk,
 )
-from .utils import move_bmg_to_device, visualize_attention_weights
-
+from .utils import move_bmg_to_device
+from cage_fusion.viz.token_viz import (
+    visualize_top_token_attentions,
+    visualize_attention_weights,
+)
 
 def train_one_epoch(
     model,

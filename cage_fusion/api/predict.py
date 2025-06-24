@@ -30,8 +30,8 @@ from cage_fusion.featurizers import featurize_and_save_streaming
 from cage_fusion.models import CAGEFusionModel
 from cage_fusion.engine.dataset import CageFusionStreamingDataset
 from cage_fusion.engine.data_utils import collate_fn_for_cage_fusion
-from cage_fusion.engine.utils import (
-    move_bmg_to_device,
+from cage_fusion.viz.token_viz import (
+    visualize_top_token_attentions,
     visualize_attention_weights,
 )
 from cage_fusion.utils.logging_utils import logger

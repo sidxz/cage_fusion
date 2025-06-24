@@ -11,8 +11,11 @@ from .metrics import (
 )
 from .utils import (
     move_bmg_to_device,
+)
+
+from cage_fusion.viz.token_viz import (
+    visualize_top_token_attentions,
     visualize_attention_weights,
-    visualize_top_token_attentions
 )
 
 # ----------------------------------------------------
