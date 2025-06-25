@@ -22,6 +22,8 @@ from collections import Counter, defaultdict
 from io import BytesIO
 from PIL import Image
 from transformers import AutoTokenizer, AutoModel
+from typing import Optional
+
 
 # Plotting and visualization libraries
 import matplotlib.pyplot as plt
@@ -58,6 +60,8 @@ def analyze_and_visualize(
     top_n_features: int = 15,
     top_n_fragments: int = 8,
     batch_size: int = 32,
+    provided_h5_path: Optional[str] = None,
+    provided_graph_path: Optional[str] = None,
 ):
     """
     Main function to analyze a dataset and generate global insight visualizations.
@@ -95,21 +99,35 @@ def analyze_and_visualize(
     )
 
     # === 2. Featurize the Dataset ===
-    console.log(f"Loading and featurizing data from {csv_path}...")
-    input_df = pd.read_csv(csv_path)
+    
     temp_dir = tempfile.mkdtemp()
 
     try:
-        h5_path, graph_path, _ = featurize_and_save_streaming(
-            df=input_df,
-            name="analysis_temp",
-            label_cols=tasks,
-            cache_dir=temp_dir,
-            tokenizer=tokenizer,
-            model=embedding_model,
-            fit_scaler=False,
-            scaler=scaler,
-        )
+        if provided_h5_path and provided_graph_path:
+            console.log(
+                f"Using provided H5 path: [cyan]{provided_h5_path}[/cyan] and graph path: [cyan]{provided_graph_path}[/cyan]"
+            )
+            h5_path = provided_h5_path
+            graph_path = provided_graph_path
+        else:
+            console.log(
+                "No pre-featurized data provided. Featurizing dataset from scratch..."
+            )
+            console.log(f"Loading and featurizing data from {csv_path}...")
+            input_df = pd.read_csv(csv_path)
+            
+
+            h5_path, graph_path, _ = featurize_and_save_streaming(
+                df=input_df,
+                name="analysis_temp",
+                label_cols=tasks,
+                cache_dir=temp_dir,
+                tokenizer=tokenizer,
+                model=embedding_model,
+                fit_scaler=False,
+                scaler=scaler,
+            )
+
         dataset = CageFusionStreamingDataset(
             h5_path, graph_path, tokenizer.pad_token_id
         )
@@ -376,9 +394,16 @@ def main():
         description="Run CAGE-Fusion Global Model Analysis for publication insights.",
         formatter_class=argparse.ArgumentDefaultsHelpFormatter,
     )
+    parser.add_argument("--csv", help="Path to input CSV dataset for analysis.")
     parser.add_argument(
-        "--csv", required=True, help="Path to input CSV dataset for analysis."
+        "--h5-path",
+        help="Path to h5 path, if provided along with graph path, will skip featurization.",
     )
+    parser.add_argument(
+        "--graph-path",
+        help="Path to graph path, if provided along with h5 path, will skip featurization.",
+    )
+
     parser.add_argument(
         "--checkpoint-dir", required=True, help="Path to the trained model directory."
     )
@@ -397,12 +422,23 @@ def main():
     )
     args = parser.parse_args()
 
+    if not args.csv and (not args.h5_path or not args.graph_path):
+        parser.error(
+            "You must provide either a CSV file for analysis or both h5 and graph paths."
+        )
+    if args.h5_path and not args.graph_path:
+        parser.error("If h5 path is provided, graph path must also be provided.")
+    if args.graph_path and not args.h5_path:
+        parser.error("If graph path is provided, h5 path must also be provided.")
+
     analyze_and_visualize(
         csv_path=args.csv,
         checkpoint_dir=args.checkpoint_dir,
         target_task=args.task,
         output_dir=args.output_dir,
         batch_size=args.batch_size,
+        provided_h5_path=args.h5_path,
+        provided_graph_path=args.graph_path,
     )
 
 
