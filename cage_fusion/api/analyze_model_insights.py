@@ -83,6 +83,12 @@ def analyze_and_visualize(
             f"Target task '{target_task}' not found in model's tasks: {tasks}"
         )
     target_task_index = tasks.index(target_task)
+    all_thresholds = checkpoint.get("best_thresholds", np.full(len(tasks), 0.5))
+    threshold = all_thresholds[target_task_index]
+    # log the threshold for the target task
+    console.log(
+        f"Using threshold {threshold} for task '{target_task}'"
+    )
 
     model = CAGEFusionModel(config).to(device)
     model.load_state_dict(checkpoint["model_state_dict"])
@@ -167,7 +173,7 @@ def analyze_and_visualize(
             )
 
             probs = torch.sigmoid(logits[:, target_task_index])
-            positive_indices = torch.where(probs >= 0.5)[0]
+            positive_indices = torch.where(probs >= threshold)[0]
             if len(positive_indices) == 0:
                 continue
 
@@ -341,7 +347,7 @@ def analyze_and_visualize(
                             bond_idx: (0.6, 0.2, 0.6) for bond_idx in attachment_bonds
                         }  # Purple for attachments
 
-                        drawer = rdMolDraw2D.MolDraw2DCairo(400, 350)
+                        drawer = rdMolDraw2D.MolDraw2DCairo(1600, 1400)
                         drawer.drawOptions().addAtomIndices = True
                         rdMolDraw2D.PrepareAndDrawMolecule(
                             drawer,
