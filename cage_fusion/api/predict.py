@@ -160,7 +160,7 @@ def predict_smiles(
                 return_attn=plot_all_attention,
             )
 
-            logits, _, _, g2t_weights, t2a_weights, _, _ = model_output
+            logits, _, _, g2t_weights, t2a_weights, _, _, _ = model_output
 
             preds = torch.sigmoid(logits).cpu().numpy()
             all_preds.append(preds)
@@ -171,10 +171,8 @@ def predict_smiles(
                         original_idx = f["original_indices"][sample_idx_offset + j]
 
                     safe_fname = "".join(c for c in smiles_batch[j] if c.isalnum())[:50]
-                    
-                    sample_plot_dir = os.path.join(
-                        attn_plot_dir, f"idx_{original_idx}"
-                    )
+
+                    sample_plot_dir = os.path.join(attn_plot_dir, f"idx_{original_idx}")
                     os.makedirs(sample_plot_dir, exist_ok=True)
 
                     if g2t_weights is not None:

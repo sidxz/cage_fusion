@@ -368,7 +368,8 @@ class CAGEFusionModel(nn.Module):
                 token_to_graph_weights,  # The new weights
                 attn_output,
                 graph_repr,
+                atom_features
             )
         else:
             # Return None for all extra values if not returning attention
-            return (logits, attn_entropy_loss, token_prior_loss, None, None, None, None)
+            return (logits, attn_entropy_loss, token_prior_loss, None, None, None, None, None)

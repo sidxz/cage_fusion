@@ -197,7 +197,7 @@ def predict_and_explain(
 
     # === 4. Forward Pass to Get Logits ===
     # We call the model directly, not through an evaluation script
-    logits, _, _, _, _, _, _ = model(
+    logits, _, _, _, _, _, _, _ = model(
         bmg=bmg,
         sequence_embeddings=token_embs,
         attn_mask=attn_mask,

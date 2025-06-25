@@ -102,6 +102,7 @@ def train_one_epoch(
             _,  # token-to-graph weights (ignored in this script)
             attn_output,
             graph_repr,
+            _,  
         ) = output
         # ---------------------------------------------
 

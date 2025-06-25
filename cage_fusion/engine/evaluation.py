@@ -96,7 +96,7 @@ def evaluate_model(
         )
 
         # Unpack the 7-item model output
-        logits, _, _, g2t_weights, t2a_weights, attn_output, graph_repr = outputs
+        logits, _, _, g2t_weights, t2a_weights, attn_output, graph_repr, _ = outputs
 
         if should_return_attn:
             # Select a random sample from the chosen batch for visualization
