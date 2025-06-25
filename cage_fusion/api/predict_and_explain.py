@@ -40,7 +40,6 @@ console = Console()
 
 def generate_saliency_visualization(smiles, tokens, token_saliency, top_n=10):
     """Generates a rich Text object with saliency-highlighted SMILES."""
-    # FIX: Check the size of the numpy array instead of its truthiness
     if not tokens or token_saliency.size == 0:
         return Text(smiles, style="bold magenta")
 
@@ -124,11 +123,17 @@ def predict_and_explain(
     config = checkpoint["config"]
     tasks = config["tasks"]
 
+    # Load the best thresholds, providing a default of 0.5 if not found
+    all_thresholds = checkpoint.get("best_thresholds", np.full(len(tasks), 0.5))
+
     if target_task not in tasks:
         raise ValueError(
             f"Target task '{target_task}' not found in model's tasks: {tasks}"
         )
     target_task_index = tasks.index(target_task)
+
+    # Get the specific threshold for our target task
+    cutoff_value = all_thresholds[target_task_index]
 
     model = CAGEFusionModel(config).to(device)
     model.load_state_dict(checkpoint["model_state_dict"])
@@ -207,6 +212,9 @@ def predict_and_explain(
     # The final predicted probability
     final_prob = torch.sigmoid(prediction_score).item()
 
+    # Determine the predicted class based on the cutoff
+    predicted_class = 1 if final_prob >= cutoff_value else 0
+
     # === 5. Backward Pass to Compute Gradients ===
     prediction_score.backward()
 
@@ -230,13 +238,20 @@ def predict_and_explain(
     )
     aux_report = generate_aux_feature_report(aux_saliency)
 
+    # Build the summary text
+    summary_text = Text(justify="center")
+    summary_text.append(f"SMILES: {smiles_string}\n")
+    summary_text.append(f"Prediction Score for '{target_task}': {final_prob:.4f}\n")
+    summary_text.append(f"Cutoff Threshold: {cutoff_value:.4f}\n\n")
+    summary_text.append(
+        f"Predicted Class: {predicted_class}",
+        style="bold yellow" if predicted_class == 1 else "bold green",
+    )
+
     # Display final report
     console.print(
         Panel(
-            Text(
-                f"SMILES: {smiles_string}\nPrediction for '{target_task}': {final_prob:.4f}",
-                justify="center",
-            ),
+            summary_text,
             title="[bold blue]Prediction Summary[/bold blue]",
             border_style="blue",
         )
