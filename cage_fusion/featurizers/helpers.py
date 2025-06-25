@@ -125,7 +125,7 @@ def process_auxiliary_features(
             else:
                 missing.append(col)
         if missing:
-            logger.warning(
+            logger.debug(
                 f"Missing label columns for prediction: {missing} (filling zeros)"
             )
 
