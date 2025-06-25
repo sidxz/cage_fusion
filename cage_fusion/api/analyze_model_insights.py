@@ -1,10 +1,11 @@
 #!/usr/bin/env python3
 """
-Corrected and Enhanced CAGE-Fusion Global Model Analyzer (v9 - Final Layout Fix)
+Corrected and Enhanced CAGE-Fusion Global Model Analyzer (v14 - Final)
 
 This script analyzes a trained CAGE-Fusion model to extract global insights.
-This version uses a robust, single GridSpec with explicit height ratios to
-generate a non-overlapping, publication-quality visualization.
+This definitive version uses a robust Matplotlib layout and includes all
+requested visualization features: contextual coloring, attachment bond
+highlighting, and descriptive titles for both rows and individual plots.
 """
 
 import os
@@ -24,7 +25,6 @@ from transformers import AutoTokenizer, AutoModel
 
 # Plotting and visualization libraries
 import matplotlib.pyplot as plt
-import matplotlib.gridspec as gridspec
 import seaborn as sns
 from rdkit import Chem
 from rdkit.Chem import Descriptors, Draw, AllChem
@@ -218,13 +218,12 @@ def analyze_and_visualize(
             f"✅ Saved auxiliary feature analysis to [cyan]{aux_fig_path}[/cyan]"
         )
 
-        # --- Advanced Contextual Substructure Visualization with GridSpec ---
+        # --- Final, Robust Contextual Substructure Visualization ---
         if fragment_counter:
             console.log(
                 "Grouping fragments and generating advanced contextual visualization..."
             )
 
-            # Step 1: Group fragments
             grouped_fragments = defaultdict(list)
             for frag_id, count in fragment_counter.most_common(100):
                 if frag_id not in fragment_examples:
@@ -254,14 +253,12 @@ def analyze_and_visualize(
                     except Exception:
                         continue
 
-            # Step 2: Sort groups
             sorted_groups = sorted(
                 grouped_fragments.items(),
                 key=lambda item: sum(frag["count"] for frag in item[1]),
                 reverse=True,
             )
 
-            # Step 3: Create plot using a single, robust GridSpec layout
             num_groups_to_plot = min(len(sorted_groups), top_n_fragments)
             if num_groups_to_plot > 0:
                 max_contexts = (
@@ -270,19 +267,12 @@ def analyze_and_visualize(
                     else 1
                 )
 
-                # Each group gets a title row and an image row
-                nrows = num_groups_to_plot * 2
-                # Define the height ratios: title rows are short, image rows are tall
-                height_ratios = []
-                for _ in range(num_groups_to_plot):
-                    height_ratios.extend([0.1, 0.9])  # 10% for title, 90% for images
-
-                # Increase vertical figure size to accommodate titles and spacing
-                fig = plt.figure(figsize=(max_contexts * 4, num_groups_to_plot * 4))
-                gs = gridspec.GridSpec(
-                    nrows, max_contexts, height_ratios=height_ratios, hspace=0.6
+                fig, axes = plt.subplots(
+                    num_groups_to_plot,
+                    max_contexts,
+                    figsize=(max_contexts * 5, num_groups_to_plot * 4.5),
+                    squeeze=False,
                 )
-
                 fig.suptitle(
                     f"Top Substructure Motifs Associated with '{target_task}'",
                     fontsize=24,
@@ -295,55 +285,75 @@ def analyze_and_visualize(
                     fragments.sort(key=lambda x: x["count"], reverse=True)
                     total_group_count = sum(f["count"] for f in fragments)
 
-                    # --- Create the title axis in the first row of the group ---
-                    title_ax = fig.add_subplot(gs[i * 2, :])  # Span all columns
-                    title_ax.text(
-                        0.5,
-                        0.5,
-                        f"Motif: '{core_smiles}' (Total Occurrences: {total_group_count})",
+                    # Use the Y-label of the first axis in a row to act as a robust row title
+                    row_title = f"Motif: '{core_smiles}'\n(Total Occurrences: {total_group_count})"
+                    # Set the label, make it horizontal, and adjust padding to give it space
+                    axes[i, 0].set_ylabel(
+                        row_title,
+                        rotation=0,
+                        size=14,
+                        labelpad=100,
                         ha="center",
                         va="center",
-                        fontsize=16,
-                        weight="medium",
                     )
-                    title_ax.axis("off")
 
-                    # --- Create the image axes in the second row of the group ---
                     for j, frag_info in enumerate(fragments):
-                        img_ax = fig.add_subplot(gs[i * 2 + 1, j])
-
+                        ax = axes[i, j]
                         mol_to_draw, bit_info_frag = (
                             frag_info["example_mol"],
                             frag_info["bit_info"],
                         )
                         core_atoms = [idx for idx, rad in bit_info_frag if rad == 0]
                         env_atoms = [idx for idx, rad in bit_info_frag if rad > 0]
-                        atom_colors = {idx: (0.8, 0.8, 1.0) for idx in env_atoms}
-                        for idx in core_atoms:
-                            atom_colors[idx] = (1.0, 0.6, 0.4)
 
-                        drawer = rdMolDraw2D.MolDraw2DCairo(350, 300)
+                        atom_colors = {
+                            idx: (0.8, 0.8, 1.0) for idx in env_atoms
+                        }  # Blue for environment
+                        for idx in core_atoms:
+                            atom_colors[idx] = (1.0, 0.6, 0.4)  # Orange for core
+
+                        all_highlight_atoms_set = set(core_atoms + env_atoms)
+                        attachment_bonds = []
+                        for bond in mol_to_draw.GetBonds():
+                            if (bond.GetBeginAtomIdx() in all_highlight_atoms_set) != (
+                                bond.GetEndAtomIdx() in all_highlight_atoms_set
+                            ):
+                                attachment_bonds.append(bond.GetIdx())
+                        bond_colors = {
+                            bond_idx: (0.6, 0.2, 0.6) for bond_idx in attachment_bonds
+                        }  # Purple for attachments
+
+                        drawer = rdMolDraw2D.MolDraw2DCairo(400, 350)
                         drawer.drawOptions().addAtomIndices = True
                         rdMolDraw2D.PrepareAndDrawMolecule(
                             drawer,
                             mol_to_draw,
                             highlightAtoms=core_atoms + env_atoms,
                             highlightAtomColors=atom_colors,
+                            highlightBonds=attachment_bonds,
+                            highlightBondColors=bond_colors,
                         )
                         drawer.FinishDrawing()
 
                         img = Image.open(BytesIO(drawer.GetDrawingText()))
-                        img_ax.imshow(img)
-                        img_ax.set_title(
-                            f"Context {j+1}\nCount: {frag_info['count']}", fontsize=12
+                        ax.imshow(img)
+                        # FINAL TEXT FIX: Add the core SMILES back to the subplot title
+                        ax.set_title(
+                            f"SMILES: '{core_smiles}'\nContext {j+1} | Count: {frag_info['count']}",
+                            fontsize=12,
                         )
-                        img_ax.axis("off")
+                        ax.axis("off")
 
-                # Save the figure
+                    # Turn off unused axes in the row
+                    for j in range(len(fragments), max_contexts):
+                        axes[i, j].axis("off")
+
+                plt.tight_layout(rect=[0, 0, 1, 0.96])
+
                 frag_fig_path = os.path.join(
                     output_dir, f"top_substructures_contextual_{target_task}.png"
                 )
-                plt.savefig(frag_fig_path, dpi=300, bbox_inches="tight")
+                plt.savefig(frag_fig_path, dpi=300)
                 plt.close(fig)
                 console.log(
                     f"✅ Saved advanced contextual substructure analysis to [cyan]{frag_fig_path}[/cyan]"
