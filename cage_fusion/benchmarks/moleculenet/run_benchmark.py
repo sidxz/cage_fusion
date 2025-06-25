@@ -149,7 +149,12 @@ def run_final_evaluation(checkpoint_path, title, test_loader, device, cache_dir)
         return
 
     checkpoint = torch.load(checkpoint_path, map_location=device, weights_only=False)
+
+    # Load the configuration from the checkpoint file for robust reloading.
     config = checkpoint["config"]
+    # Forcibly enable co-attention to guarantee visualization plots are generated.
+    config["use_co_attention"] = True
+
     best_thresholds = checkpoint.get("best_thresholds")
     logger.info(f"Best thresholds: {best_thresholds}")
 
@@ -157,6 +162,9 @@ def run_final_evaluation(checkpoint_path, title, test_loader, device, cache_dir)
     model.load_state_dict(checkpoint["model_state_dict"], strict=True)
     model.eval()
     logger.info(f"Loaded {title} model from epoch {checkpoint['epoch']}")
+
+    # Need tokenizer for visualization
+    tokenizer = AutoTokenizer.from_pretrained(config["model_checkpoint"])
 
     criterion = torch.nn.BCEWithLogitsLoss()
     (test_loss, test_mcc, test_auc, test_pr, _, per_task_metrics, _, _, _) = (
@@ -169,6 +177,8 @@ def run_final_evaluation(checkpoint_path, title, test_loader, device, cache_dir)
             label_names=config["tasks"],
             use_precomputed_thresholds=best_thresholds,
             cache_dir=os.path.join(cache_dir, f"test_eval_{title.lower()}"),
+            plot_attn=True,  # Always plot for final eval
+            tokenizer_obj=tokenizer,
         )
     )
 
@@ -193,10 +203,11 @@ def run_benchmark(dataset_name, seed, force_rerun, rerun_train, splitter):
     """
     # Directory for this run
     config = get_default_config()
-    
-    #GRAPH_ONLY_MODE
-    config["graph_only_mode"] = GRAPH_ONLY_MODE
 
+    # Set co-attention to True to ensure it's enabled for the entire run.
+    config["use_co_attention"] = True
+
+    config["graph_only_mode"] = GRAPH_ONLY_MODE
     run_id = f"{dataset_name}_seed{seed}"
 
     config["base_cache_dir"] = os.path.join(CACHE_ROOT, run_id)
@@ -244,7 +255,8 @@ def run_benchmark(dataset_name, seed, force_rerun, rerun_train, splitter):
             logger.warning(
                 f"Rerun training enabled. Deleting checkpoints: {config['checkpoints_dir']}"
             )
-            shutil.rmtree(config["checkpoints_dir"])
+            for pt_file in glob.glob(os.path.join(config["checkpoints_dir"], "*.pt")):
+                os.remove(pt_file)
 
     # Create fresh dirs if needed
     os.makedirs(config["data_dir"], exist_ok=True)
@@ -276,7 +288,9 @@ def run_benchmark(dataset_name, seed, force_rerun, rerun_train, splitter):
     h5_paths, glob_paths = {}, {}
     scaler = None
     for split, df_original in [("train", df_train), ("val", df_val), ("test", df_test)]:
-        df = df_original.copy().reset_index().rename(columns={"index": "original_index"})
+        df = (
+            df_original.copy().reset_index().rename(columns={"index": "original_index"})
+        )
 
         h5, glob_p, scaler_obj = featurize_and_save_streaming(
             df=df,
@@ -304,6 +318,7 @@ def run_benchmark(dataset_name, seed, force_rerun, rerun_train, splitter):
         CageFusionStreamingDataset(
             h5_paths["train"],
             os.path.join(config["features_dir"], f"train_graph_feats.pkl"),
+            tokenizer.pad_token_id,
         ),
         batch_size=config["batch_size"],
         collate_fn=collate_fn_for_cage_fusion,
@@ -314,6 +329,7 @@ def run_benchmark(dataset_name, seed, force_rerun, rerun_train, splitter):
         CageFusionStreamingDataset(
             h5_paths["val"],
             os.path.join(config["features_dir"], f"val_graph_feats.pkl"),
+            tokenizer.pad_token_id,
         ),
         batch_size=config["batch_size"],
         shuffle=False,
@@ -323,6 +339,7 @@ def run_benchmark(dataset_name, seed, force_rerun, rerun_train, splitter):
         CageFusionStreamingDataset(
             h5_paths["test"],
             os.path.join(config["features_dir"], f"test_graph_feats.pkl"),
+            tokenizer.pad_token_id,
         ),
         batch_size=config["batch_size"],
         collate_fn=collate_fn_for_cage_fusion,
@@ -359,9 +376,6 @@ def run_benchmark(dataset_name, seed, force_rerun, rerun_train, splitter):
 
     best_model_path = os.path.join(config["checkpoints_dir"], MODEL_BEST)
     latest_model_path = os.path.join(config["checkpoints_dir"], MODEL_LATEST)
-
-    # Save checkpoints to the new checkpoints dir
-    # NOTE: Make sure your train_model and/or saving logic writes to run_ckpt_dir
 
     # Clear memory
     del model

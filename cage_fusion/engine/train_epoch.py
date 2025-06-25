@@ -9,8 +9,11 @@ from .metrics import (
     MCCBatchAggregatorToDisk,
     PRBatchAggregatorToDisk,
 )
-from .utils import move_bmg_to_device, visualize_attention_weights
-
+from .utils import move_bmg_to_device
+from cage_fusion.viz.token_viz import (
+    visualize_top_token_attentions,
+    visualize_attention_weights,
+)
 
 def train_one_epoch(
     model,
@@ -29,24 +32,6 @@ def train_one_epoch(
 ):
     """
     Runs a single training epoch with logging and streaming metric computation.
-
-    Args:
-        model (torch.nn.Module): The model being trained.
-        loader (DataLoader): DataLoader for training data.
-        optimizer (Optimizer): Optimizer instance.
-        criterion (callable): Primary loss function.
-        scheduler (_LRScheduler): Learning rate scheduler.
-        device (torch.device): Device to run the training on.
-        num_tasks (int): Number of prediction tasks.
-        cache_dir (str): Path to store temporary metric data.
-        tokenizer_obj (Tokenizer): Tokenizer for attention visualization.
-        log_attn_random_batch (bool): Enable attention visualization for one batch.
-        lambda_entropy (float): Weight for attention entropy regularization.
-        lambda_prior (float): Weight for token prior regularization.
-        label_names (List[str]): Optional names for each task.
-
-    Returns:
-        Tuple: (avg_loss, avg_mcc, avg_auc, avg_pr)
     """
     model.train()
     total_loss = 0.0
@@ -79,7 +64,11 @@ def train_one_epoch(
             logger.warning(f"Batch {batch_idx} is None. Skipping.")
             continue
 
-        bmg, token_embs, attn_mask, aux_feats, labels, input_ids = batch
+        # --- FIXED: Unpack the 7-item batch, including SMILES ---
+        # The collate_fn now returns a 7-element tuple. The SMILES list is the last
+        # element. We unpack it into `_` as it is not used in the training loop.
+        bmg, token_embs, attn_mask, aux_feats, labels, input_ids, _ = batch
+        # -----------------------------------------------------------
 
         # Move tensors to device
         bmg = move_bmg_to_device(bmg, device)
@@ -91,6 +80,7 @@ def train_one_epoch(
 
         optimizer.zero_grad()
 
+        # Always request attention weights, as they are used for regularization losses
         output = model(
             bmg=bmg,
             sequence_embeddings=token_embs,
@@ -103,14 +93,18 @@ def train_one_epoch(
         if output is None:
             raise ValueError(f"Model returned None for batch {batch_idx}")
 
+        # --- This unpacking was already correct ---
         (
             logits,
             attn_entropy_loss,
             token_prior_loss,
-            attn_weights,
+            g2t_weights,  # graph-to-token weights
+            _,  # token-to-graph weights (ignored in this script)
             attn_output,
             graph_repr,
+            _,  
         ) = output
+        # ---------------------------------------------
 
         loss = criterion(logits, labels)
         loss += lambda_entropy * attn_entropy_loss
@@ -132,7 +126,7 @@ def train_one_epoch(
         if (
             batch_idx == batch_to_log_idx
             and not has_logged_attention
-            and attn_weights is not None
+            and g2t_weights is not None
         ):
             random_idx = random.randint(0, labels.size(0) - 1)
             plot_dir = os.path.join(cache_dir, "attention_plots")
@@ -142,7 +136,7 @@ def train_one_epoch(
             )
 
             visualize_attention_weights(
-                attn_weights[random_idx].detach(),
+                g2t_weights[random_idx].detach(),
                 attn_mask[random_idx],
                 model.num_heads,
                 output_path=plot_path,

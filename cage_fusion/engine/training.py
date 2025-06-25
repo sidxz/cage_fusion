@@ -130,7 +130,7 @@ def train_model(
             device=device,
             num_tasks=num_tasks,
             label_names=label_names,
-            plot_attn=(epoch % 5 == 0),
+            plot_attn=(epoch % 1 == 0),
             cache_dir=val_cache,
             tokenizer_obj=tokenizer_obj,
         )

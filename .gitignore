@@ -59,6 +59,9 @@ docs/_build/
 target/
 maildir
 
+**/.DS_Store
+**/._.DS_Store
+
 
 #Logs
 logs/
@@ -70,3 +73,4 @@ output/
 checkpoints/
 
 temp/
+test/

@@ -54,9 +54,7 @@ class CAGEFusionModel(nn.Module):
         self.proj_dropout = config["proj_dropout"]
 
         # --- Control Flags ---
-        # Flag to enable graph-only prediction mode, bypassing fusion.
         self.graph_only_mode = config.get("graph_only_mode", False)
-        # Flag to use the advanced gated co-attention mechanism.
         self.use_co_attention = config.get("use_co_attention", True)
 
         # --- Tokenizer and Special Tokens ---
@@ -105,12 +103,11 @@ class CAGEFusionModel(nn.Module):
             self.graph_only_predictor = BinaryClassificationFFN(
                 input_dim=self.graph_dim,
                 n_tasks=self.num_tasks,
-                hidden_dim=self.graph_dim,  # Common practice in Chemprop
+                hidden_dim=self.graph_dim,
                 n_layers=2,
                 dropout=0.2,
                 activation="ReLU",
             )
-            # Add placeholder attributes for logging consistency
             scaled_graph_factor = config.get("scaled_graph_factor", 1.0)
             self.scale_graph = nn.Parameter(
                 torch.tensor(scaled_graph_factor), requires_grad=False
@@ -123,10 +120,10 @@ class CAGEFusionModel(nn.Module):
             self.aux_feature_dim = config.get("aux_feature_dim", 0)
             logger.info(
                 "Graph-only predictor initialized with scaled factors: "
-                f"graph={self.scale_graph.item()}, attn={self.scale_attn.item()}, aux={self.scale_aux.item()}"
+                f"graph={self.scale_graph.item()}, attn={self.scale_attn.item()}, aux={self.scale_aux_item()}"
             )
             logger.info("Model initialized in GRAPH-ONLY mode (Chemprop architecture).")
-            return  # Skip initializing fusion components if in graph-only mode
+            return
 
         # --- Projection and Aggregation Layers (for Fusion Mode) ---
         self.attention_aggregation = MeanAggregation()
@@ -224,23 +221,28 @@ class CAGEFusionModel(nn.Module):
         Forward pass of CAGEFusionModel.
         """
         # --- Initial Modality Representations ---
-        # Get atom-level features and a single graph-level representation from the MPNN.
         atom_features = self.encoder.message_passing(bmg)
         graph_repr = self.encoder.agg(atom_features, bmg.batch)
 
         # --- Graph-Only Mode Logic ---
         if self.graph_only_mode:
             logits = self.graph_only_predictor(graph_repr)
-            # Return a tuple that matches the expected output structure to avoid unpacking errors.
             if return_attn:
-                # Return zero tensors as placeholders for attn_output to prevent errors in evaluation.
+                # Return a tuple that matches the new, longer expected output structure
                 attn_output_placeholder = torch.zeros_like(graph_repr)
-                return (logits, 0.0, 0.0, None, attn_output_placeholder, graph_repr)
+                return (
+                    logits,
+                    0.0,
+                    0.0,
+                    None,
+                    None,
+                    attn_output_placeholder,
+                    graph_repr,
+                )
             else:
-                return (logits, 0.0, 0.0)
+                return (logits, 0.0, 0.0, None, None, None, None)
 
         # --- Fusion Mode Logic ---
-        logger.debug("===== Forward Pass Inputs (Fusion Mode) =====")
         batch_size = sequence_embeddings.shape[0]
 
         # --- Preparation and Masking ---
@@ -263,43 +265,56 @@ class CAGEFusionModel(nn.Module):
         padded = pad_sequence(segments, batch_first=True, padding_value=0.0)
         graph_queries = self.graph_proj(padded)
 
-        # Initialize regularization losses and a placeholder for attention weights.
+        # Initialize placeholders for attention weights.
         attn_entropy_loss = 0.0
         token_prior_loss = 0.0
-        attn_weights_final = None
+        graph_to_token_weights = None
+        # --- ADDED: Placeholder for the new attention weights ---
+        token_to_graph_weights = None
+        # --------------------------------------------------------
 
         # --- Co-Attention Dialogue Loop ---
         for i in range(2):
-            attn_out, attn_weights = self.cross_attn[i](
-                graph_queries,
-                embedding_proj,
-                embedding_proj,
+            # Graph queries tokens
+            attn_out, g2t_weights = self.cross_attn[i](
+                query=graph_queries,
+                key=embedding_proj,
+                value=embedding_proj,
                 key_padding_mask=key_padding_mask,
                 need_weights=True,
                 average_attn_weights=False,
             )
+            # Store the first loop's weights for plotting
             if i == 0:
-                attn_weights_final = attn_weights
+                graph_to_token_weights = g2t_weights
 
-            # Calculate regularization losses
+            # Calculate regularization losses (only for graph-to-token for now)
             with torch.no_grad():
-                attn_log = torch.log(attn_weights + 1e-8)
-                entropy = -torch.sum(attn_weights * attn_log, dim=-1).mean()
+                attn_log = torch.log(g2t_weights + 1e-8)
+                entropy = -torch.sum(g2t_weights * attn_log, dim=-1).mean()
                 attn_entropy_loss += entropy
                 if self.token_importance_prior is not None:
                     prior_scores = self.token_importance_prior[input_ids_batch]
                     prior_scores = (
-                        prior_scores.unsqueeze(1).unsqueeze(1).expand_as(attn_weights)
+                        prior_scores.unsqueeze(1).unsqueeze(1).expand_as(g2t_weights)
                     )
-                    token_prior_loss += (
-                        -(attn_weights * prior_scores).sum(dim=-1).mean()
-                    )
+                    token_prior_loss += -(g2t_weights * prior_scores).sum(dim=-1).mean()
 
             # The bidirectional, gated update.
             if self.use_co_attention:
-                c2g_out, _ = self.co_attn[i](
-                    embedding_proj, graph_queries, graph_queries
+                # --- MODIFIED: Capture token-to-graph attention weights ---
+                # Tokens query graph
+                c2g_out, t2g_weights = self.co_attn[i](
+                    query=embedding_proj,
+                    key=graph_queries,
+                    value=graph_queries,
+                    need_weights=True,  # Ask for the weights
+                    average_attn_weights=False,
                 )
+                if i == 0:
+                    token_to_graph_weights = t2g_weights
+                # ---------------------------------------------------------
+
                 gate_g = torch.sigmoid(
                     self.gate_graph[i](torch.cat([graph_queries, attn_out], dim=-1))
                 )
@@ -343,16 +358,18 @@ class CAGEFusionModel(nn.Module):
             )
             raise ValueError("Output logits contain NaNs")
 
-        logger.debug("===== Forward Pass Complete =====")
-        return (
-            (
+        # --- MODIFIED: Update the return signature ---
+        if return_attn:
+            return (
                 logits,
                 attn_entropy_loss,
                 token_prior_loss,
-                attn_weights_final,
+                graph_to_token_weights,  # The original weights
+                token_to_graph_weights,  # The new weights
                 attn_output,
                 graph_repr,
+                atom_features
             )
-            if return_attn
-            else (logits, attn_entropy_loss, token_prior_loss)
-        )
+        else:
+            # Return None for all extra values if not returning attention
+            return (logits, attn_entropy_loss, token_prior_loss, None, None, None, None, None)
