@@ -51,6 +51,10 @@ from tqdm import tqdm
 
 console = Console()
 
+MF_RADIUS = 3  # Default radius for Morgan fingerprints
+CORE_MOTIF_ATOMS = 3  # Default number of atoms in the core motif
+MIN_MOTIF_COMPLEXITY = 1
+
 
 def analyze_and_visualize(
     csv_path: str,
@@ -58,10 +62,11 @@ def analyze_and_visualize(
     target_task: str,
     output_dir: str,
     top_n_features: int = 15,
-    top_n_fragments: int = 8,
+    top_n_fragments: int = 10,
     batch_size: int = 32,
     provided_h5_path: Optional[str] = None,
     provided_graph_path: Optional[str] = None,
+    feature_dir: Optional[str] = None,
 ):
     """
     Main function to analyze a dataset and generate global insight visualizations.
@@ -86,9 +91,7 @@ def analyze_and_visualize(
     all_thresholds = checkpoint.get("best_thresholds", np.full(len(tasks), 0.5))
     threshold = all_thresholds[target_task_index]
     # log the threshold for the target task
-    console.log(
-        f"Using threshold {threshold} for task '{target_task}'"
-    )
+    console.log(f"Using threshold {threshold} for task '{target_task}'")
 
     model = CAGEFusionModel(config).to(device)
     model.load_state_dict(checkpoint["model_state_dict"])
@@ -105,8 +108,9 @@ def analyze_and_visualize(
     )
 
     # === 2. Featurize the Dataset ===
-    
-    temp_dir = tempfile.mkdtemp()
+
+    if feature_dir is None:
+        feature_dir = tempfile.mkdtemp()
 
     try:
         if provided_h5_path and provided_graph_path:
@@ -121,13 +125,12 @@ def analyze_and_visualize(
             )
             console.log(f"Loading and featurizing data from {csv_path}...")
             input_df = pd.read_csv(csv_path)
-            
 
             h5_path, graph_path, _ = featurize_and_save_streaming(
                 df=input_df,
                 name="analysis_temp",
                 label_cols=tasks,
-                cache_dir=temp_dir,
+                cache_dir=feature_dir,
                 tokenizer=tokenizer,
                 model=embedding_model,
                 fit_scaler=False,
@@ -206,7 +209,7 @@ def analyze_and_visualize(
                     top_atom_indices = np.argsort(mol_atom_grads_norm)[-3:]
                     for atom_idx in top_atom_indices:
                         fp = AllChem.GetMorganFingerprint(
-                            mol, 2, fromAtoms=[int(atom_idx)]
+                            mol, MF_RADIUS, fromAtoms=[int(atom_idx)]
                         )
                         for frag_id, _ in fp.GetNonzeroElements().items():
                             fragment_counter.update([frag_id])
@@ -256,16 +259,32 @@ def analyze_and_visualize(
                 if not mol:
                     continue
                 bit_info = {}
-                AllChem.GetMorganFingerprint(mol, 2, bitInfo=bit_info)
+                AllChem.GetMorganFingerprint(mol, MF_RADIUS, bitInfo=bit_info)
                 if frag_id in bit_info:
-                    core_atoms = [idx for idx, rad in bit_info[frag_id] if rad == 0]
+                    atoms_for_core_smiles = [
+                        idx for idx, rad in bit_info[frag_id] if rad <= CORE_MOTIF_ATOMS
+                    ]
+                    # The actual highlighted fragment remains the full radius 2 fingerprint
+                    full_fragment_atoms = [idx for idx, rad in bit_info[frag_id]]
+
+                    if not atoms_for_core_smiles:
+                        continue
                     try:
                         core_smiles = Chem.MolFragmentToSmiles(
                             mol,
-                            atomsToUse=core_atoms,
+                            atomsToUse=atoms_for_core_smiles,
                             isomericSmiles=True,
                             canonical=True,
                         )
+                        # Ensure the core SMILES is not trivial (e.g. just a single atom)
+                        if len(core_smiles) < 3 and len(atoms_for_core_smiles) > 1:
+                            # Fallback for very small fragments to prevent overly simple names
+                            core_smiles = Chem.MolFragmentToSmiles(
+                                mol,
+                                atomsToUse=full_fragment_atoms,
+                                isomericSmiles=True,
+                                canonical=True,
+                            )
                         grouped_fragments[core_smiles].append(
                             {
                                 "frag_id": frag_id,
@@ -277,11 +296,31 @@ def analyze_and_visualize(
                     except Exception:
                         continue
 
+            # sorted_groups = sorted(
+            #     grouped_fragments.items(),
+            #     key=lambda item: sum(frag["count"] for frag in item[1]),
+            #     reverse=True,
+            # )
+            # --- NEW SORTING LOGIC ---
+            # This new key scores each group by its total count multiplied by the
+            # number of atoms in its core SMILES string. This prioritizes
+            # larger, more complex motifs that are still frequently important.
+
+            console.log("Ranking influential motifs by a 'count * complexity' score...")
+
             sorted_groups = sorted(
                 grouped_fragments.items(),
-                key=lambda item: sum(frag["count"] for frag in item[1]),
+                key=lambda item: sum(frag["count"] for frag in item[1])
+                * len(item[0]),  # item[0] is the core_smiles
                 reverse=True,
             )
+            filtered_groups = [
+                (smiles, frags)
+                for smiles, frags in sorted_groups
+                if len(smiles) >= MIN_MOTIF_COMPLEXITY
+            ]
+            # Use the filtered list for plotting
+            sorted_groups = filtered_groups
 
             num_groups_to_plot = min(len(sorted_groups), top_n_fragments)
             if num_groups_to_plot > 0:
@@ -387,10 +426,8 @@ def analyze_and_visualize(
         logger.error(f"An error occurred during analysis: {e}")
         traceback.print_exc()
         console.log(
-            f"[bold red]Analysis failed. Temporary files are preserved for debugging at: {temp_dir}[/bold red]"
+            f"[bold red]Analysis failed. Files are preserved for debugging at: {feature_dir}[/bold red]"
         )
-    else:
-        shutil.rmtree(temp_dir)
 
     console.rule("[bold green]Analysis Complete[/bold green]")
 
@@ -426,6 +463,11 @@ def main():
     parser.add_argument(
         "--batch-size", type=int, default=32, help="Batch size for analysis."
     )
+    parser.add_argument(
+        "--feature-dir",
+        help="Place to save features",
+    )
+
     args = parser.parse_args()
 
     if not args.csv and (not args.h5_path or not args.graph_path):
@@ -445,6 +487,7 @@ def main():
         batch_size=args.batch_size,
         provided_h5_path=args.h5_path,
         provided_graph_path=args.graph_path,
+        feature_dir=args.feature_dir,
     )
 
 

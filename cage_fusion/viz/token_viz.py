@@ -115,7 +115,7 @@ def visualize_top_token_attentions(
     combined_atom_weights = {i: 0.0 for i in range(num_atoms)}
     all_source_atoms = set()
     attention_colormap = cm.get_cmap("Greens")
-    source_token_color = (1.0, 0.0, 0.0)  # Red
+    source_token_color = (0.8, 0.4, 0.4)  # Red
 
     for token_idx in top_token_indices:
         token_str = full_token_list[token_idx].replace("##", "")

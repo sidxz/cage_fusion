@@ -125,11 +125,15 @@ def log_epoch_results(epoch, num_epochs, history, label_names, per_task_metrics)
     console.print(val_table)
 
     # --- Per Task Metrics ---
-    task_table = Table(title="Per-Task Validation Metrics", header_style="bold green")
-    task_table.add_column("Task")
-    task_table.add_column("AUC", justify="right")
-    task_table.add_column("MCC", justify="right")
-    task_table.add_column("PR-AUC", justify="right")
+    task_table = Table(
+        title="Per-Task Validation Metrics",
+        header_style="bold green",
+        show_footer=False,
+    )
+    task_table.add_column("Task", style="cyan")
+    task_table.add_column("ROC-AUC", style="magenta", justify="right")
+    task_table.add_column("MCC", style="yellow", justify="right")
+    task_table.add_column("PR-AUC", style="green", justify="right")
 
     prev_tasks = history["per_task"][-2] if len(history["per_task"]) > 1 else None
     for i, (mcc, auc, pr) in enumerate(per_task_metrics):
@@ -152,6 +156,21 @@ def log_epoch_results(epoch, num_epochs, history, label_names, per_task_metrics)
         task_table.add_row(
             task, f"{auc:.3f} {auc_d}", f"{mcc:.3f} {mcc_d}", f"{pr:.3f} {pr_d}"
         )
+
+    # --- MODIFIED: Add Macro-Average Row ---
+    macro_auc = history["val_auc"][-1]
+    macro_mcc = history["val_mcc"][-1]
+    macro_pr = history["val_pr"][-1]
+
+    task_table.add_section()  # Adds a separator line
+    task_table.add_row(
+        "[bold]Macro-Avg[/bold]",
+        f"[bold]{macro_auc:.4f}[/bold]",
+        f"[bold]{macro_mcc:.4f}[/bold]",
+        f"[bold]{macro_pr:.4f}[/bold]",
+    )
+    # --- End of Modification ---
+
     console.print(task_table)
 
     # --- Scalers ---
