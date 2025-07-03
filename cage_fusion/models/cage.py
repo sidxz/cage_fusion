@@ -139,6 +139,7 @@ class CAGEFusionModel(nn.Module):
         )
 
         # --- Co-Attention Dialogue Block ---
+        co_attention_layers = config.get("co_attention_layers", 2)
         self.cross_attn = nn.ModuleList(
             [
                 nn.MultiheadAttention(
@@ -147,7 +148,7 @@ class CAGEFusionModel(nn.Module):
                     dropout=self.cross_attn_dropout,
                     batch_first=True,
                 )
-                for _ in range(2)
+                for _ in range(co_attention_layers)
             ]
         )
         self.co_attn = nn.ModuleList(
@@ -158,20 +159,21 @@ class CAGEFusionModel(nn.Module):
                     dropout=self.cross_attn_dropout,
                     batch_first=True,
                 )
-                for _ in range(2)
+                for _ in range(co_attention_layers)
             ]
         )
+        
         self.gate_graph = nn.ModuleList(
-            [nn.Linear(2 * self.embedding_dim, self.embedding_dim) for _ in range(2)]
+            [nn.Linear(2 * self.embedding_dim, self.embedding_dim) for _ in range(co_attention_layers)]
         )
         self.gate_embedding = nn.ModuleList(
-            [nn.Linear(2 * self.embedding_dim, self.embedding_dim) for _ in range(2)]
+            [nn.Linear(2 * self.embedding_dim, self.embedding_dim) for _ in range(co_attention_layers)]
         )
         self.attention_norm_layers = nn.ModuleList(
-            [nn.LayerNorm(self.embedding_dim) for _ in range(2)]
+            [nn.LayerNorm(self.embedding_dim) for _ in range(co_attention_layers)]
         )
         self.ffn_norm_layers = nn.ModuleList(
-            [nn.LayerNorm(self.embedding_dim) for _ in range(2)]
+            [nn.LayerNorm(self.embedding_dim) for _ in range(co_attention_layers)]
         )
         self.cross_attn_ffn = nn.ModuleList(
             [
@@ -181,7 +183,7 @@ class CAGEFusionModel(nn.Module):
                     nn.Dropout(self.cross_attn_dropout),
                     nn.Linear(self.embedding_dim, self.embedding_dim),
                 )
-                for _ in range(2)
+                for _ in range(co_attention_layers)
             ]
         )
 
@@ -191,16 +193,19 @@ class CAGEFusionModel(nn.Module):
         self.scale_aux = nn.Parameter(torch.tensor(0.1))
 
         # --- Prediction Head (for Fusion Mode) ---
+        fusion_dropout_1 = config.get("fusion_dropout_1", 0.3)
+        fusion_dropout_2 = config.get("fusion_dropout_2", 0.2)
+
         fusion_dim = self.graph_dim + self.embedding_dim + self.aux_feature_dim
         self.fusion_mlp = nn.Sequential(
             nn.Linear(fusion_dim, 768),
             nn.BatchNorm1d(768),
             nn.ReLU(),
-            nn.Dropout(0.3),
+            nn.Dropout(fusion_dropout_1),
             nn.Linear(768, 384),
             nn.BatchNorm1d(384),
             nn.ReLU(),
-            nn.Dropout(0.2),
+            nn.Dropout(fusion_dropout_2),
             nn.Linear(384, 128),
             nn.BatchNorm1d(128),
             nn.ReLU(),
@@ -274,7 +279,7 @@ class CAGEFusionModel(nn.Module):
         # --------------------------------------------------------
 
         # --- Co-Attention Dialogue Loop ---
-        for i in range(2):
+        for i in range(len(self.cross_attn)):
             # Graph queries tokens
             attn_out, g2t_weights = self.cross_attn[i](
                 query=graph_queries,

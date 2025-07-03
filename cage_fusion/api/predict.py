@@ -139,6 +139,7 @@ def predict_smiles(
         logger.info(f"Plotting all attentions to: {attn_plot_dir}")
 
     with torch.no_grad():
+        top_tokens_per_original_index = []
         for i, batch in enumerate(tqdm(loader, desc="Predicting")):
             if batch is None or batch[0] is None:
                 logger.warning(
@@ -216,6 +217,9 @@ def predict_smiles(
                         full_token_list_str = tokenizer.convert_ids_to_tokens(
                             actual_tokens_ids
                         )
+                        
+                        top_token_strs = [full_token_list_str[i] for i in top_token_indices.cpu().numpy()]
+                        top_tokens_per_original_index.append((original_idx, " ".join(top_token_strs)))
 
                         visualize_top_token_attentions(
                             smiles=smiles_to_plot,
@@ -228,6 +232,7 @@ def predict_smiles(
             sample_idx_offset += len(smiles_batch)
 
     # === 5. Format Output ===
+
     output_df = input_df.copy()
     if all_preds:
         all_preds_np = np.concatenate(all_preds, axis=0)
@@ -242,6 +247,9 @@ def predict_smiles(
             output_df = output_df.merge(
                 results_df, left_index=True, right_index=True, how="left"
             )
+        token_df = pd.DataFrame(top_tokens_per_original_index, columns=["original_index", "top_attention_tokens"])
+        output_df = output_df.merge(token_df, left_index=True, right_on="original_index", how="left")
+        output_df.drop(columns=["original_index"], inplace=True)
 
     # === 6. Clean up ===
     try:
