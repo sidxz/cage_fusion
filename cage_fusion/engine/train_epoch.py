@@ -67,7 +67,7 @@ def train_one_epoch(
         # --- FIXED: Unpack the 7-item batch, including SMILES ---
         # The collate_fn now returns a 7-element tuple. The SMILES list is the last
         # element. We unpack it into `_` as it is not used in the training loop.
-        bmg, token_embs, attn_mask, aux_feats, labels, input_ids, _ = batch
+        bmg, token_embs, attn_mask, aux_feats, labels, input_ids, smiles_batch = batch
         # -----------------------------------------------------------
 
         # Move tensors to device
@@ -87,6 +87,7 @@ def train_one_epoch(
             attn_mask=attn_mask,
             aux_feats=aux_feats,
             input_ids_batch=input_ids,
+            smiles_batch=smiles_batch,
             return_attn=True,
         )
 
@@ -102,7 +103,8 @@ def train_one_epoch(
             _,  # token-to-graph weights (ignored in this script)
             attn_output,
             graph_repr,
-            _,  
+            _,
+            prompt_attn_weights  
         ) = output
         # ---------------------------------------------
 

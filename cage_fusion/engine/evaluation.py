@@ -92,11 +92,12 @@ def evaluate_model(
             attn_mask=attn_mask,
             aux_feats=rdkit_feats,
             input_ids_batch=input_ids_batch,
+            smiles_batch=smiles_batch,
             return_attn=should_return_attn,
         )
 
         # Unpack the 7-item model output
-        logits, _, _, g2t_weights, t2a_weights, attn_output, graph_repr, _ = outputs
+        logits, _, _, g2t_weights, t2a_weights, attn_output, graph_repr, _, prompt_attn_weights = outputs
 
         if should_return_attn:
             # Select a random sample from the chosen batch for visualization

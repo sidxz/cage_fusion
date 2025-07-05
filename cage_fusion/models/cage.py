@@ -8,6 +8,8 @@ from chemprop.nn.predictors import BinaryClassificationFFN
 from chemprop.models.model import MPNN
 from torch.nn.utils.rnn import pad_sequence
 from cage_fusion.utils.logging_utils import logger
+from cage_fusion.models.fg_prompt_addon import FunctionalGroupPrompt
+from cage_fusion.engine.fg_utils import get_functional_groups, NUM_FUNCTIONAL_GROUPS
 import json
 
 
@@ -52,11 +54,13 @@ class CAGEFusionModel(nn.Module):
         self.num_heads = config["num_heads"]
         self.cross_attn_dropout = config["cross_attn_dropout"]
         self.proj_dropout = config["proj_dropout"]
+        self.scaled_fg_factor = torch.tensor(config.get("scaled_fg_factor", 0.1))
 
         # --- Control Flags ---
         self.graph_only_mode = config.get("graph_only_mode", False)
         self.use_co_attention = config.get("use_co_attention", True)
         self.use_aux_features = config.get("use_aux_features", True)
+        self.use_fg_prompt = config.get("use_fg_prompt", False)
 
         # --- Tokenizer and Special Tokens ---
         tokenizer = AutoTokenizer.from_pretrained(config["model_checkpoint"])
@@ -197,6 +201,20 @@ class CAGEFusionModel(nn.Module):
             ]
         )
 
+        if self.use_fg_prompt:
+            # Only initialize these layers if the feature is enabled
+            self.fg_prompter = FunctionalGroupPrompt(
+                feature_dim=self.graph_dim, num_functional_groups=NUM_FUNCTIONAL_GROUPS
+            )
+            self.alpha = nn.Parameter(
+                self.scaled_fg_factor,
+                requires_grad=True,
+            )
+            logger.info(
+                "Functional Group Prompt initialized with alpha: %.4f",
+                self.alpha.item(),
+            )
+
         # --- Final Fusion Parameters ---
         self.scale_graph = nn.Parameter(torch.tensor(scaled_graph_factor))
         self.scale_attn = nn.Parameter(torch.tensor(scale_attn_factor))
@@ -240,6 +258,7 @@ class CAGEFusionModel(nn.Module):
         attn_mask,
         aux_feats,
         input_ids_batch,
+        smiles_batch,
         return_attn=False,
     ):
         """
@@ -354,8 +373,24 @@ class CAGEFusionModel(nn.Module):
         flat = torch.cat(unpadded, dim=0)
         attn_output = self.attention_aggregation(flat, bmg.batch)
 
+        prompted_graph_repr = graph_repr
+        prompt_attn_weights = None
+
+        if self.use_fg_prompt:
+            # Generate functional group prompts
+            fg_prompt_tensor, prompt_attn_weights = self.fg_prompter(
+                smiles_batch=smiles_batch,  # <--- PASS THE NEW ARGUMENT
+                atom_features=atom_features,
+                bmg=bmg,  # <--- PASS THE BMG OBJECT
+                return_attn=return_attn,
+            )
+            # Scale the prompts by alpha
+            fg_prompt_tensor = fg_prompt_tensor * self.alpha
+            # Add the prompts to the graph representation
+            prompted_graph_repr = graph_repr + fg_prompt_tensor
+
         tensors_to_fuse = [
-            self.scale_graph * graph_repr,
+            self.scale_graph * prompted_graph_repr,
             self.scale_attn * attn_output,
         ]
         if self.use_aux_features:
@@ -389,12 +424,14 @@ class CAGEFusionModel(nn.Module):
                 attn_output,
                 graph_repr,
                 atom_features,
+                prompt_attn_weights,
             )
         else:
             return (
                 logits,
                 attn_entropy_loss,
                 token_prior_loss,
+                None,
                 None,
                 None,
                 None,

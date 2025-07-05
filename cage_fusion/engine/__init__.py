@@ -17,3 +17,4 @@ from .metrics import (
 # Logging and utilities
 from .logging import plot_training_history, log_epoch_results, plot_confusion_matrix
 from .utils import move_bmg_to_device
+from .fg_utils import get_functional_groups, NUM_FUNCTIONAL_GROUPS
