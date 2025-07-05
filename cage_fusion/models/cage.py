@@ -56,6 +56,9 @@ class CAGEFusionModel(nn.Module):
         # --- Control Flags ---
         self.graph_only_mode = config.get("graph_only_mode", False)
         self.use_co_attention = config.get("use_co_attention", True)
+        # --- ADDED CONTROL FLAG ---
+        self.use_aux_features = config.get("use_aux_features", True)
+        # --------------------------
 
         # --- Tokenizer and Special Tokens ---
         tokenizer = AutoTokenizer.from_pretrained(config["model_checkpoint"])
@@ -97,6 +100,9 @@ class CAGEFusionModel(nn.Module):
             predictor=dummy_pred,
         )
         logger.debug("Graph encoder initialized")
+        scaled_graph_factor = config.get("scaled_graph_factor", 1.0)
+        scale_attn_factor = config.get("scale_attn_factor", 1.0)
+        scale_aux_factor = config.get("scale_aux_factor", 1.0)
 
         # --- Graph-Only Mode Predictor (Mimics Chemprop) ---
         if self.graph_only_mode:
@@ -108,15 +114,15 @@ class CAGEFusionModel(nn.Module):
                 dropout=0.2,
                 activation="ReLU",
             )
-            scaled_graph_factor = config.get("scaled_graph_factor", 1.0)
             self.scale_graph = nn.Parameter(
                 torch.tensor(scaled_graph_factor), requires_grad=False
             )
-            scale_attn_factor = config.get("scale_attn_factor", 0.05)
             self.scale_attn = nn.Parameter(
                 torch.tensor(scale_attn_factor), requires_grad=False
             )
-            scale_aux_factor = config.get("scale_aux_factor", 0.1)
+            self.scale_aux = nn.Parameter(
+                torch.tensor(scale_aux_factor), requires_grad=False
+            )
             self.aux_feature_dim = config.get("aux_feature_dim", 0)
             logger.info(
                 "Graph-only predictor initialized with scaled factors: "
@@ -162,12 +168,18 @@ class CAGEFusionModel(nn.Module):
                 for _ in range(co_attention_layers)
             ]
         )
-        
+
         self.gate_graph = nn.ModuleList(
-            [nn.Linear(2 * self.embedding_dim, self.embedding_dim) for _ in range(co_attention_layers)]
+            [
+                nn.Linear(2 * self.embedding_dim, self.embedding_dim)
+                for _ in range(co_attention_layers)
+            ]
         )
         self.gate_embedding = nn.ModuleList(
-            [nn.Linear(2 * self.embedding_dim, self.embedding_dim) for _ in range(co_attention_layers)]
+            [
+                nn.Linear(2 * self.embedding_dim, self.embedding_dim)
+                for _ in range(co_attention_layers)
+            ]
         )
         self.attention_norm_layers = nn.ModuleList(
             [nn.LayerNorm(self.embedding_dim) for _ in range(co_attention_layers)]
@@ -188,15 +200,26 @@ class CAGEFusionModel(nn.Module):
         )
 
         # --- Final Fusion Parameters ---
-        self.scale_graph = nn.Parameter(torch.tensor(1.0))
-        self.scale_attn = nn.Parameter(torch.tensor(0.05))
-        self.scale_aux = nn.Parameter(torch.tensor(0.1))
+        self.scale_graph = nn.Parameter(torch.tensor(scaled_graph_factor))
+        self.scale_attn = nn.Parameter(torch.tensor(scale_attn_factor))
+        # --- MODIFIED THIS LINE ---
+        if self.use_aux_features:
+            self.scale_aux = nn.Parameter(torch.tensor(scale_aux_factor))
+        else:
+            # Register as a non-trainable buffer if not used
+            self.register_buffer("scale_aux", torch.tensor(0.0))
+        # ------------------------
 
         # --- Prediction Head (for Fusion Mode) ---
         fusion_dropout_1 = config.get("fusion_dropout_1", 0.3)
         fusion_dropout_2 = config.get("fusion_dropout_2", 0.2)
 
-        fusion_dim = self.graph_dim + self.embedding_dim + self.aux_feature_dim
+        # --- MODIFIED THIS BLOCK ---
+        fusion_dim = self.graph_dim + self.embedding_dim
+        if self.use_aux_features:
+            fusion_dim += self.aux_feature_dim
+        # -------------------------
+
         self.fusion_mlp = nn.Sequential(
             nn.Linear(fusion_dim, 768),
             nn.BatchNorm1d(768),
@@ -344,14 +367,17 @@ class CAGEFusionModel(nn.Module):
         flat = torch.cat(unpadded, dim=0)
         attn_output = self.attention_aggregation(flat, bmg.batch)
 
-        fused = torch.cat(
-            [
-                self.scale_graph * graph_repr,
-                self.scale_attn * attn_output,
-                self.scale_aux * aux_feats,
-            ],
-            dim=1,
-        )
+        # --- MODIFIED THIS BLOCK ---
+        tensors_to_fuse = [
+            self.scale_graph * graph_repr,
+            self.scale_attn * attn_output,
+        ]
+        if self.use_aux_features:
+            tensors_to_fuse.append(self.scale_aux * aux_feats)
+
+        fused = torch.cat(tensors_to_fuse, dim=1)
+        # -------------------------
+
         fused = torch.nan_to_num(fused, nan=0.0, posinf=1e3, neginf=-1e3)
 
         # --- Prediction ---
@@ -373,8 +399,85 @@ class CAGEFusionModel(nn.Module):
                 token_to_graph_weights,  # The new weights
                 attn_output,
                 graph_repr,
-                atom_features
+                atom_features,
             )
         else:
             # Return None for all extra values if not returning attention
-            return (logits, attn_entropy_loss, token_prior_loss, None, None, None, None, None)
+            return (
+                logits,
+                attn_entropy_loss,
+                token_prior_loss,
+                None,
+                None,
+                None,
+                None,
+                None,
+            )
+
+    def initialize_modality_scalers(self, data_loader, device):
+        """
+        Calculates the initial norms of each modality and sets the scalers
+        such that the initial effective scaled norm is 1.0 for each.
+        This should be called once before training begins.
+        """
+        logger.info("Initializing modality scalers for balanced contribution...")
+        self.eval()  # Set the model to evaluation mode
+
+        # Get a single batch of data
+        try:
+            # The local import is necessary to avoid circular dependency issues
+            from cage_fusion.engine.utils import move_bmg_to_device
+
+            bmg, sequence_embeddings, attn_mask, aux_feats, _, input_ids_batch, _ = (
+                next(iter(data_loader))
+            )
+        except StopIteration:
+            logger.warning("Data loader is empty, cannot initialize scalers.")
+            return
+
+        # Move data to the correct device
+        bmg = move_bmg_to_device(bmg, device)
+        sequence_embeddings = sequence_embeddings.to(device)
+        attn_mask = attn_mask.to(device)
+        aux_feats = aux_feats.to(device)
+        input_ids_batch = input_ids_batch.to(device)
+
+        with torch.no_grad():
+            # Perform a forward pass to get the unscaled modality outputs.
+            # We need to request attention to get all the intermediate outputs.
+            _, _, _, _, _, attn_output, graph_repr, _ = self.forward(
+                bmg=bmg,
+                sequence_embeddings=sequence_embeddings,
+                attn_mask=attn_mask,
+                aux_feats=aux_feats,
+                input_ids_batch=input_ids_batch,
+                return_attn=True,
+            )
+
+            # Calculate the mean L2 norm for each modality across the batch
+            norm_graph = graph_repr.norm(p=2, dim=1).mean()
+            norm_attn = attn_output.norm(p=2, dim=1).mean()
+
+            # Add a small epsilon to prevent division by zero
+            epsilon = 1e-8
+
+            # Update the scaler parameters in-place to be the inverse of the norm
+            self.scale_graph.data.fill_(1.0 / (norm_graph + epsilon))
+            self.scale_attn.data.fill_(1.0 / (norm_attn + epsilon))
+
+            logger.info("Scaler initialization complete:")
+            logger.info(
+                f"  Initial Graph Norm: {norm_graph:.4f} -> New Scaler: {self.scale_graph.item():.4f}"
+            )
+            logger.info(
+                f"  Initial Attn Norm: {norm_attn:.4f} -> New Scaler: {self.scale_attn.item():.4f}"
+            )
+
+            if self.use_aux_features:
+                norm_aux = aux_feats.norm(p=2, dim=1).mean()
+                self.scale_aux.data.fill_(1.0 / (norm_aux + epsilon))
+                logger.info(
+                    f"  Initial Aux Norm: {norm_aux:.4f} -> New Scaler: {self.scale_aux.item():.4f}"
+                )
+
+        self.train()  # Return model to training mode
