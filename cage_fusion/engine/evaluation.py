@@ -196,7 +196,7 @@ def evaluate_model(
                     smiles=smiles_batch[random_sample_idx],
                     prompt_attn_weights=prompt_attn_weights[random_sample_idx],
                     output_path=plot_path_fg,
-                    title=f"Functional Group Attention for Sample",
+                    title=f"Functional Group Attention (PROMPT)",
                 )
 
         loss = criterion(logits, labels)

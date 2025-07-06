@@ -50,7 +50,6 @@
   "Thioester": "[#6]C(=O)S[#6]",
   "Epoxide": "O1CC1",
   "Aziridine": "C1NC1",
-  "Aromatic_Ring": "a",
   "Heterocycle": "*1***1",
   "Aliphatic_Carbocycle": "C1CCCCC1",
   "Aliphatic_Heterocycle": "C1CNCO1",

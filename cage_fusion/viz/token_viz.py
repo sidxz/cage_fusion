@@ -19,7 +19,7 @@ matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 import seaborn as sns
 from chemprop.data import BatchMolGraph
-from ..utils.logging_utils import logger
+from cage_fusion.utils.logging_utils import logger
 
 
 def visualize_attention_weights(

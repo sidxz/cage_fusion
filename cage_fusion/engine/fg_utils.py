@@ -5,7 +5,7 @@ from rdkit import Chem
 
 # --- DYNAMIC INITIALIZATION FROM FILE ---
 # Use Path for robust file path handling.
-fg_path = Path(__file__).parent.parent / "dt/functional_groups.json"
+fg_path = Path(__file__).parent.parent / "dt/pains.json"
 
 if not fg_path.is_file():
     # Provide a clear error if the file is missing.
