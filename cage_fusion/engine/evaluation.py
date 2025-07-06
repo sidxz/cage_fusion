@@ -193,8 +193,9 @@ def evaluate_model(
             if prompt_attn_weights and prompt_attn_weights[random_sample_idx]:
                 plot_path_fg = os.path.join(plot_dir, "fg_prompt_attention.png")
                 visualize_fg_attention(
-                    prompt_attn_weights[random_sample_idx],
-                    output_path=plot_path_fg,   
+                    smiles=smiles_batch[random_sample_idx],
+                    prompt_attn_weights=prompt_attn_weights[random_sample_idx],
+                    output_path=plot_path_fg,
                     title=f"Functional Group Attention for Sample",
                 )
 
