@@ -114,9 +114,9 @@ def evaluate_model(
         if should_return_attn:
             # Select a random sample from the chosen batch for visualization
             random_sample_idx = random.randint(0, len(smiles_batch) - 1)
-            logger.info(
-                f"Visualizing random sample index {random_sample_idx} from batch {batch_idx}."
-            )
+            # logger.info(
+            #     f"Visualizing random sample index {random_sample_idx} from batch {batch_idx}."
+            # )
 
             plot_dir = os.path.join(cache_dir, "attention_plots_eval")
             os.makedirs(plot_dir, exist_ok=True)

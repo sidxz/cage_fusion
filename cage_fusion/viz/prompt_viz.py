@@ -186,4 +186,4 @@ def visualize_fg_attention(
 
     # --- Save ---
     final_image.save(output_path)
-    logger.info(f"Saved detailed functional group attention to {output_path}")
+    #logger.info(f"Saved detailed functional group attention to {output_path}")

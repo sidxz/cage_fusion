@@ -1,3 +1,4 @@
+# train_epoch.py
 import os
 import torch
 import numpy as np
@@ -14,6 +15,8 @@ from cage_fusion.viz.token_viz import (
     visualize_top_token_attentions,
     visualize_attention_weights,
 )
+from collections import defaultdict
+
 
 def train_one_epoch(
     model,
@@ -36,6 +39,9 @@ def train_one_epoch(
     model.train()
     total_loss = 0.0
     has_logged_attention = False
+
+    total_attention_per_fg = defaultdict(float)
+    count_per_fg = defaultdict(int)
 
     # Metric aggregators (streaming to disk)
     mcc_agg = MCCBatchAggregatorToDisk(
@@ -104,9 +110,23 @@ def train_one_epoch(
             attn_output,
             graph_repr,
             _,
-            prompt_attn_weights  
+            prompt_attn_weights,
         ) = output
         # ---------------------------------------------
+
+        # --- MODIFICATION: Aggregate prompt attention stats from the batch ---
+        if prompt_attn_weights:
+            for item_prompt_weights in prompt_attn_weights:
+                if isinstance(item_prompt_weights, dict):
+                    fg_ids = item_prompt_weights.get("fg_ids")
+                    weights = item_prompt_weights.get("weights")
+
+                    if fg_ids is not None and weights is not None:
+                        for fg_id, weight in zip(fg_ids, weights):
+                            if fg_id != -1:
+                                total_attention_per_fg[fg_id] += weight
+                                count_per_fg[fg_id] += 1
+        # -------------------------------------------------------------------
 
         loss = criterion(logits, labels)
         loss += lambda_entropy * attn_entropy_loss
@@ -163,7 +183,18 @@ def train_one_epoch(
     avg_auc = auc_agg.compute()
     avg_pr = pr_agg.compute()
 
+    # --- MODIFICATION: Calculate and sort average attention weights ---
+    avg_attention_per_fg = {
+        fg_id: total_attention_per_fg[fg_id] / count
+        for fg_id, count in count_per_fg.items()
+        if count > 0
+    }
+    sorted_fgs = sorted(
+        avg_attention_per_fg.items(), key=lambda item: item[1], reverse=True
+    )
+    # ---------------------------------------------------------------
+
     logger.info(
         f"Training complete. Avg Loss: {avg_loss:.4f}, MCC: {avg_mcc:.4f}, AUC: {avg_auc:.4f}, PR-AUC: {avg_pr:.4f}"
     )
-    return avg_loss, avg_mcc, avg_auc, avg_pr
+    return avg_loss, avg_mcc, avg_auc, avg_pr, sorted_fgs

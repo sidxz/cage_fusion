@@ -553,7 +553,6 @@
   "Sulfoxide": "S(=O)(C)C",
   "Disulfide": "SS",
   "Silane": "[SiH4]",
-  "Silyl_Ether": "[#6]OSi",
   "Phosphine": "P([#6])([#6])[#6]",
   "Phosphine_Oxide": "P(=O)([#6])([#6])[#6]",
   "Organometallic": "[#6][!#6!#1!#7!#8!#16!F!Cl!Br!I]",

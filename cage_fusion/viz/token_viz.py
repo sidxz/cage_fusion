@@ -329,7 +329,7 @@ def _stitch_images(img1_path, img2_path, img3_path, output_dir):
 
         final_output_path = os.path.join(output_dir, "attention_summary.png")
         new_im.save(final_output_path)
-        logger.info(f"Saved final composite visualization to: {final_output_path}")
+        #logger.info(f"Saved final composite visualization to: {final_output_path}")
 
     finally:
         # Clean up temporary files
