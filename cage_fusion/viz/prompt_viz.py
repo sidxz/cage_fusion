@@ -170,7 +170,11 @@ def visualize_fg_attention(
         info_text = f"{data['name']} (Attention: {data['attention']:.1%})"
         draw.text((65, y_cursor), info_text, font=legend_font, fill="black")
         y_cursor += 22
-
+        patt = (
+            Chem.MolFromSmarts(data["pattern"])
+            if isinstance(data["pattern"], str)
+            else data["pattern"]
+        )
         smarts_str = Chem.MolToSmarts(patt)
         draw.text(
             (65, y_cursor),
