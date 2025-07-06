@@ -1,28 +1,19 @@
 import sys
+import json
+from pathlib import Path
 from rdkit import Chem
 
-# A more robust and validated list of functional groups.
-# Using explicit SMARTS patterns is safer than using shorthands.
-FUNCTIONAL_GROUPS = {
-    "Hydroxyl": "[#6][OX2H]",
-    "Carbonyl": "[#6][CX3](=O)[#6]",
-    "Carboxyl": "[CX3](=O)[OX2H1]",
-    "Amine_Primary": "[NH2;!$(N=O)]",
-    "Amine_Secondary": "[NH1;!$(N=O)]",
-    "Amine_Tertiary": "[N;!$(N=O);!$(N-N)]",
-    "Ether": "[OD2]([#6])[#6]",
-    "Ester": "[#6][CX3](=O)[OX2][#6]",
-    "Phenyl": "c1ccccc1",
-    "Nitro": "[$([NX3](=O)=O),$([NX3+](=O)[O-])][!#8]",
-    "Thiol": "[#16X2H]",
-    # Known PAINS/Nuisance motifs
-    "Catechol": "c1c(O)c(O)ccc1",
-    "Rhodanine": "C1C(=S)NC(=O)S1",
-    "Michael_Acceptor_1": "[#6]=[#6]C(=O)",  # Enone
-    "Michael_Acceptor_2": "[#6]=[#6]C#N",  # Acrylonitrile
-}
+# --- DYNAMIC INITIALIZATION FROM FILE ---
+# Use Path for robust file path handling.
+fg_path = Path(__file__).parent.parent / "dt/functional_groups.json"
 
-# --- ROBUST INITIALIZATION ---
+if not fg_path.is_file():
+    # Provide a clear error if the file is missing.
+    sys.exit(f"Error: Functional groups file not found at {fg_path}")
+
+with open(fg_path, "r") as f:
+    FUNCTIONAL_GROUPS = json.load(f)
+
 # Pre-compile the SMARTS patterns and check for errors.
 FG_SMARTS = {}
 for name, pattern in FUNCTIONAL_GROUPS.items():
