@@ -55,15 +55,15 @@ def train_one_epoch(
     )
 
     # Pick a random batch for attention visualization
-    batch_to_log_idx = (
-        random.randint(0, len(loader) - 1)
-        if log_attn_random_batch and len(loader) > 0
-        else -1
-    )
-    if batch_to_log_idx >= 0:
-        logger.info(
-            f"Attention visualization will be logged for batch index: {batch_to_log_idx}"
-        )
+    # batch_to_log_idx = (
+    #     random.randint(0, len(loader) - 1)
+    #     if log_attn_random_batch and len(loader) > 0
+    #     else -1
+    # )
+    # if batch_to_log_idx >= 0:
+    #     logger.info(
+    #         f"Attention visualization will be logged for batch index: {batch_to_log_idx}"
+    #     )
 
     for batch_idx, batch in enumerate(tqdm(loader, desc="Training")):
         if batch is None:
@@ -145,37 +145,37 @@ def train_one_epoch(
         pr_agg.update(labels.detach(), probs)
 
         # Attention visualization
-        if (
-            batch_idx == batch_to_log_idx
-            and not has_logged_attention
-            and g2t_weights is not None
-        ):
-            random_idx = random.randint(0, labels.size(0) - 1)
-            plot_dir = os.path.join(cache_dir, "attention_plots")
-            os.makedirs(plot_dir, exist_ok=True)
-            plot_path = os.path.join(
-                plot_dir, f"batch_{batch_idx}_idx_{random_idx}.png"
-            )
+        # if (
+        #     batch_idx == batch_to_log_idx
+        #     and not has_logged_attention
+        #     and g2t_weights is not None
+        # ):
+        #     random_idx = random.randint(0, labels.size(0) - 1)
+        #     plot_dir = os.path.join(cache_dir, "attention_plots")
+        #     os.makedirs(plot_dir, exist_ok=True)
+        #     plot_path = os.path.join(
+        #         plot_dir, f"batch_{batch_idx}_idx_{random_idx}.png"
+        #     )
 
-            visualize_attention_weights(
-                g2t_weights[random_idx].detach(),
-                attn_mask[random_idx],
-                model.num_heads,
-                output_path=plot_path,
-                input_ids=input_ids[random_idx],
-                tokenizer_obj=tokenizer_obj,
-            )
+        #     visualize_attention_weights(
+        #         g2t_weights[random_idx].detach(),
+        #         attn_mask[random_idx],
+        #         model.num_heads,
+        #         output_path=plot_path,
+        #         input_ids=input_ids[random_idx],
+        #         tokenizer_obj=tokenizer_obj,
+        #     )
 
-            logger.debug(f"Graph norm: {graph_repr.norm(dim=1).mean():.4f}")
-            logger.debug(f"Attention norm: {attn_output.norm(dim=1).mean():.4f}")
-            logger.debug(
-                f"Modality scalers: "
-                f"scale_graph={model.scale_graph.item():.4f}, "
-                f"scale_attn={model.scale_attn.item():.4f}, "
-                f"scale_aux={model.scale_aux.item():.4f}"
-            )
+        #     logger.debug(f"Graph norm: {graph_repr.norm(dim=1).mean():.4f}")
+        #     logger.debug(f"Attention norm: {attn_output.norm(dim=1).mean():.4f}")
+        #     logger.debug(
+        #         f"Modality scalers: "
+        #         f"scale_graph={model.scale_graph.item():.4f}, "
+        #         f"scale_attn={model.scale_attn.item():.4f}, "
+        #         f"scale_aux={model.scale_aux.item():.4f}"
+        #     )
 
-            has_logged_attention = True
+        #     has_logged_attention = True
 
     # Final metric aggregation
     avg_loss = total_loss / len(loader)
