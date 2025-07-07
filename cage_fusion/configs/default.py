@@ -35,7 +35,7 @@ def get_default_config():
         "fusion_dropout_1": 0.2,  # Dropout rate in first fusion layer
         "fusion_dropout_2": 0.1,  # Dropout rate in second
         # === Training Hyperparameters ===
-        "learning_rate": 0.005,  # Learning rate for the optimizer
+        "learning_rate": 0.0005,  # Learning rate for the optimizer
         "num_epochs": 50,  # Total number of training epochs
         "batch_size": 192,  # Number of samples per batch
         "warmup_fraction": 0.09,  # Warmup steps as a fraction of total steps

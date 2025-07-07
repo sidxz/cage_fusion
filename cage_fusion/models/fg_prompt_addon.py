@@ -56,7 +56,7 @@ class FunctionalGroupPrompt(nn.Module):
 
                 fg_ids = get_functional_groups(mol_object)
                 if not fg_ids:
-                    print(f"[FGPrompt] ⚠️ No functional groups found for: {smiles}")
+                    #print(f"[FGPrompt] ⚠️ No functional groups found for: {smiles}")
                     batch_prompts.append(
                         torch.zeros(1, self.feature_dim, device=atom_features.device)
                     )
