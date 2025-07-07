@@ -93,7 +93,7 @@ def train_model(
     logger.info(
         f"Total trainable parameters: {sum(p.numel() for p in model.parameters() if p.requires_grad):,}"
     )
-
+    #torch.autograd.set_detect_anomaly(True)
     for epoch in range(start_epoch, num_epochs + 1):
         logger.info(f"{'='*25} Epoch {epoch}/{num_epochs} {'='*25}")
 

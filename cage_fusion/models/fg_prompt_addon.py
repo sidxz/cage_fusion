@@ -38,29 +38,85 @@ class FunctionalGroupPrompt(nn.Module):
         bmg,
         return_attn: bool = False,
     ):
-        """
-        Generates a functional group prompt for a batch of molecules.
 
-        Args:
-            smiles_batch: A list of SMILES strings for the batch.
-            atom_features: The tensor of atom-level features from the GNN.
-            bmg: The BatchMolGraph object, used to map atoms to molecules.
-            return_attn: Flag to return attention weights for visualization.
-
-        Returns:
-            A tensor of prompt vectors for the batch. If return_attn is True, also
-            returns a list of attention weight dictionaries.
-        """
         batch_prompts = []
-        batch_attn_weights = []  # Initialize list to store attention weights
+        batch_attn_weights = []
 
-        # --- FINAL PATCH: Iterate over the provided SMILES list ---
         for i, smiles in enumerate(smiles_batch):
-            # a. Create an RDKit molecule object from the SMILES string.
-            mol_object = Chem.MolFromSmiles(smiles)
+            try:
+                mol_object = Chem.MolFromSmiles(smiles)
+                if mol_object is None:
+                    print(f"[FGPrompt] ❌ Invalid SMILES: {smiles}")
+                    batch_prompts.append(
+                        torch.zeros(1, self.feature_dim, device=atom_features.device)
+                    )
+                    if return_attn:
+                        batch_attn_weights.append({"fg_ids": [], "weights": []})
+                    continue
 
-            # If RDKit fails to parse the SMILES, use a zero prompt.
-            if mol_object is None:
+                fg_ids = get_functional_groups(mol_object)
+                if not fg_ids:
+                    print(f"[FGPrompt] ⚠️ No functional groups found for: {smiles}")
+                    batch_prompts.append(
+                        torch.zeros(1, self.feature_dim, device=atom_features.device)
+                    )
+                    if return_attn:
+                        batch_attn_weights.append({"fg_ids": [], "weights": []})
+                    continue
+
+                mol_atom_indices = (bmg.batch == i).nonzero(as_tuple=True)[0]
+                mol_atom_features = atom_features[mol_atom_indices]
+
+                if mol_atom_features.nelement() == 0:
+                    print(f"[FGPrompt] ⚠️ No atom features for: {smiles}")
+                    batch_prompts.append(
+                        torch.zeros(1, self.feature_dim, device=atom_features.device)
+                    )
+                    if return_attn:
+                        batch_attn_weights.append({"fg_ids": [], "weights": []})
+                    continue
+
+                fg_ids_tensor = torch.tensor(
+                    fg_ids, dtype=torch.long, device=atom_features.device
+                )
+                static_fg_embeds = self.fg_embedding(fg_ids_tensor)
+
+                atom_signal = mol_atom_features.mean(dim=0, keepdim=True)
+                if torch.isnan(atom_signal).any():
+                    print(f"[FGPrompt] ❌ NaNs in atom signal for: {smiles}")
+                    print(f"           Atom indices: {mol_atom_indices.tolist()}")
+                    print(f"           Atom features:\n{mol_atom_features}")
+                    batch_prompts.append(
+                        torch.zeros(1, self.feature_dim, device=atom_features.device)
+                    )
+                    if return_attn:
+                        batch_attn_weights.append({"fg_ids": fg_ids, "weights": []})
+                    continue
+
+                atom_signal = atom_signal.expand_as(static_fg_embeds)
+
+                # --- Fused representation ---
+                fused_input = torch.cat([static_fg_embeds, atom_signal], dim=1)
+                fused_fg_embeds = torch.relu(self.fusion_layer(fused_input))
+
+                # --- Attention summarization ---
+                query = self.query_vector
+                attn_input = torch.cat([query, fused_fg_embeds.unsqueeze(0)], dim=1)
+                attn_output, attn_weights = self.attention(
+                    query=attn_input, key=attn_input, value=attn_input
+                )
+
+                prompt_vector = attn_output[:, 0, :]
+                batch_prompts.append(prompt_vector)
+
+                if return_attn:
+                    weights_to_fgs = attn_weights[0, 0, 1:].detach().cpu().numpy()
+                    batch_attn_weights.append(
+                        {"fg_ids": fg_ids, "weights": weights_to_fgs}
+                    )
+
+            except Exception as e:
+                print(f"[FGPrompt] ❌ Exception processing {smiles}: {e}")
                 batch_prompts.append(
                     torch.zeros(1, self.feature_dim, device=atom_features.device)
                 )
@@ -68,54 +124,9 @@ class FunctionalGroupPrompt(nn.Module):
                     batch_attn_weights.append({"fg_ids": [], "weights": []})
                 continue
 
-            fg_ids = get_functional_groups(mol_object)
+        if not batch_prompts:
+            return torch.zeros(0, self.feature_dim, device=atom_features.device), None
 
-            # If no functional groups are found, use a zero prompt.
-            if not fg_ids:
-                batch_prompts.append(
-                    torch.zeros(1, self.feature_dim, device=atom_features.device)
-                )
-                if return_attn:
-                    batch_attn_weights.append({"fg_ids": [], "weights": []})
-                continue
-
-            # b. Get the atom features corresponding to only the i-th molecule.
-            # The `batch` attribute of bmg is a tensor mapping each atom to its molecule index.
-            mol_atom_indices = (bmg.batch == i).nonzero(as_tuple=True)[0]
-            mol_atom_features = atom_features[mol_atom_indices]
-
-            # c. Look up embeddings for the functional groups present in this molecule.
-            fg_ids_tensor = torch.tensor(
-                fg_ids, dtype=torch.long, device=atom_features.device
-            )
-            static_fg_embeds = self.fg_embedding(fg_ids_tensor)
-
-            # d. Use the mean of the molecule's atom features as the "atom signal".
-            atom_signal = mol_atom_features.mean(dim=0, keepdim=True).expand_as(
-                static_fg_embeds
-            )
-
-            # e. Fuse the static FG embeddings with the dynamic atom signal.
-            fused_input = torch.cat([static_fg_embeds, atom_signal], dim=1)
-            fused_fg_embeds = torch.relu(self.fusion_layer(fused_input))
-
-            # f. Use self-attention to get a single prompt vector for the molecule.
-            query = self.query_vector
-            attn_input = torch.cat([query, fused_fg_embeds.unsqueeze(0)], dim=1)
-
-            attn_output, attn_weights = self.attention(
-                query=attn_input, key=attn_input, value=attn_input
-            )
-
-            prompt_vector = attn_output[:, 0, :]
-            batch_prompts.append(prompt_vector)
-
-            # g. If requested, store the attention weights for visualization.
-            if return_attn:
-                weights_to_fgs = attn_weights[0, 0, 1:].detach().cpu().numpy()
-                batch_attn_weights.append({"fg_ids": fg_ids, "weights": weights_to_fgs})
-
-        # Concatenate the list of prompts into a single tensor for the batch.
         final_prompts = torch.cat(batch_prompts, dim=0)
 
         if return_attn:

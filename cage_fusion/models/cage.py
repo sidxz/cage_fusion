@@ -384,8 +384,13 @@ class CAGEFusionModel(nn.Module):
                 bmg=bmg,  # <--- PASS THE BMG OBJECT
                 return_attn=return_attn,
             )
+
             # Scale the prompts by alpha
             fg_prompt_tensor = fg_prompt_tensor * self.alpha
+
+            if torch.isnan(fg_prompt_tensor).any():
+                logger.error("Functional Group Prompt contains NaNs!")
+                fg_prompt_tensor = torch.nan_to_num(fg_prompt_tensor, nan=0.0)
             # Add the prompts to the graph representation
             prompted_graph_repr = graph_repr + fg_prompt_tensor
 
@@ -404,6 +409,8 @@ class CAGEFusionModel(nn.Module):
         # ----------------------------
 
         fused = torch.nan_to_num(fused, nan=0.0, posinf=1e3, neginf=-1e3)
+        if torch.isnan(fused).any():
+            logger.error("Fused tensor contains NaNs BEFORE MLP!")
 
         # --- Prediction ---
         logits = self.output(self.fusion_mlp(fused))
