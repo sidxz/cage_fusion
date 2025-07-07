@@ -34,6 +34,7 @@ from cage_fusion.viz.token_viz import (
     visualize_top_token_attentions,
     visualize_attention_weights,
 )
+from cage_fusion.viz.prompt_viz import visualize_fg_attention
 from cage_fusion.utils.logging_utils import logger
 from cage_fusion.engine.utils import move_bmg_to_device
 
@@ -158,10 +159,13 @@ def predict_smiles(
                 attn_mask=attn_mask,
                 aux_feats=aux_feats,
                 input_ids_batch=input_ids,
+                smiles_batch=smiles_batch,
                 return_attn=plot_all_attention,
             )
 
-            logits, _, _, g2t_weights, t2a_weights, _, _, _ = model_output
+            logits, _, _, g2t_weights, t2a_weights, _, _, _, prompt_attn_weights = (
+                model_output
+            )
 
             preds = torch.sigmoid(logits).cpu().numpy()
             all_preds.append(preds)
@@ -217,9 +221,14 @@ def predict_smiles(
                         full_token_list_str = tokenizer.convert_ids_to_tokens(
                             actual_tokens_ids
                         )
-                        
-                        top_token_strs = [full_token_list_str[i] for i in top_token_indices.cpu().numpy()]
-                        top_tokens_per_original_index.append((original_idx, " ".join(top_token_strs)))
+
+                        top_token_strs = [
+                            full_token_list_str[i]
+                            for i in top_token_indices.cpu().numpy()
+                        ]
+                        top_tokens_per_original_index.append(
+                            (original_idx, " ".join(top_token_strs))
+                        )
 
                         visualize_top_token_attentions(
                             smiles=smiles_to_plot,
@@ -227,6 +236,14 @@ def predict_smiles(
                             full_token_list=full_token_list_str,
                             top_token_indices=top_token_indices.cpu().numpy(),
                             output_dir=sample_plot_dir,
+                        )
+                    if prompt_attn_weights and prompt_attn_weights[j]:
+                        plot_path_fg = os.path.join(sample_plot_dir, "fg_prompt_attention.png")
+                        visualize_fg_attention(
+                            smiles=smiles_batch[j],
+                            prompt_attn_weights=prompt_attn_weights[j],
+                            output_path=plot_path_fg,
+                            title=f"Functional Group Attention (PROMPT)",
                         )
 
             sample_idx_offset += len(smiles_batch)
@@ -247,8 +264,13 @@ def predict_smiles(
             output_df = output_df.merge(
                 results_df, left_index=True, right_index=True, how="left"
             )
-        token_df = pd.DataFrame(top_tokens_per_original_index, columns=["original_index", "top_attention_tokens"])
-        output_df = output_df.merge(token_df, left_index=True, right_on="original_index", how="left")
+        token_df = pd.DataFrame(
+            top_tokens_per_original_index,
+            columns=["original_index", "top_attention_tokens"],
+        )
+        output_df = output_df.merge(
+            token_df, left_index=True, right_on="original_index", how="left"
+        )
         output_df.drop(columns=["original_index"], inplace=True)
 
     # === 6. Clean up ===

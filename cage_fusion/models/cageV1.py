@@ -8,8 +8,6 @@ from chemprop.nn.predictors import BinaryClassificationFFN
 from chemprop.models.model import MPNN
 from torch.nn.utils.rnn import pad_sequence
 from cage_fusion.utils.logging_utils import logger
-from cage_fusion.models.fg_prompt_addon import FunctionalGroupPrompt
-from cage_fusion.engine.fg_utils import get_functional_groups, NUM_FUNCTIONAL_GROUPS
 import json
 
 
@@ -54,13 +52,13 @@ class CAGEFusionModel(nn.Module):
         self.num_heads = config["num_heads"]
         self.cross_attn_dropout = config["cross_attn_dropout"]
         self.proj_dropout = config["proj_dropout"]
-        self.scaled_fg_factor = torch.tensor(config.get("scaled_fg_factor", 0.1))
 
         # --- Control Flags ---
         self.graph_only_mode = config.get("graph_only_mode", False)
         self.use_co_attention = config.get("use_co_attention", True)
+        # --- ADDED CONTROL FLAG ---
         self.use_aux_features = config.get("use_aux_features", True)
-        self.use_fg_prompt = config.get("use_fg_prompt", False)
+        # --------------------------
 
         # --- Tokenizer and Special Tokens ---
         tokenizer = AutoTokenizer.from_pretrained(config["model_checkpoint"])
@@ -201,39 +199,26 @@ class CAGEFusionModel(nn.Module):
             ]
         )
 
-        if self.use_fg_prompt:
-            # Only initialize these layers if the feature is enabled
-            self.fg_prompter = FunctionalGroupPrompt(
-                feature_dim=self.graph_dim, num_functional_groups=NUM_FUNCTIONAL_GROUPS
-            )
-            self.alpha = nn.Parameter(
-                self.scaled_fg_factor,
-                requires_grad=True,
-            )
-            logger.info(
-                "Functional Group Prompt initialized with alpha: %.4f",
-                self.alpha.item(),
-            )
-
         # --- Final Fusion Parameters ---
         self.scale_graph = nn.Parameter(torch.tensor(scaled_graph_factor))
         self.scale_attn = nn.Parameter(torch.tensor(scale_attn_factor))
+        # --- MODIFIED THIS LINE ---
         if self.use_aux_features:
             self.scale_aux = nn.Parameter(torch.tensor(scale_aux_factor))
         else:
+            # Register as a non-trainable buffer if not used
             self.register_buffer("scale_aux", torch.tensor(0.0))
+        # ------------------------
 
         # --- Prediction Head (for Fusion Mode) ---
         fusion_dropout_1 = config.get("fusion_dropout_1", 0.3)
         fusion_dropout_2 = config.get("fusion_dropout_2", 0.2)
 
+        # --- MODIFIED THIS BLOCK ---
         fusion_dim = self.graph_dim + self.embedding_dim
         if self.use_aux_features:
             fusion_dim += self.aux_feature_dim
-
-        # --- ADDED: GATING LAYER ---
-        self.fusion_gate = nn.Linear(fusion_dim, fusion_dim)
-        # ---------------------------
+        # -------------------------
 
         self.fusion_mlp = nn.Sequential(
             nn.Linear(fusion_dim, 768),
@@ -258,7 +243,6 @@ class CAGEFusionModel(nn.Module):
         attn_mask,
         aux_feats,
         input_ids_batch,
-        smiles_batch,
         return_attn=False,
     ):
         """
@@ -272,6 +256,7 @@ class CAGEFusionModel(nn.Module):
         if self.graph_only_mode:
             logits = self.graph_only_predictor(graph_repr)
             if return_attn:
+                # Return a tuple that matches the new, longer expected output structure
                 attn_output_placeholder = torch.zeros_like(graph_repr)
                 return (
                     logits,
@@ -312,10 +297,13 @@ class CAGEFusionModel(nn.Module):
         attn_entropy_loss = 0.0
         token_prior_loss = 0.0
         graph_to_token_weights = None
+        # --- ADDED: Placeholder for the new attention weights ---
         token_to_graph_weights = None
+        # --------------------------------------------------------
 
         # --- Co-Attention Dialogue Loop ---
         for i in range(len(self.cross_attn)):
+            # Graph queries tokens
             attn_out, g2t_weights = self.cross_attn[i](
                 query=graph_queries,
                 key=embedding_proj,
@@ -324,9 +312,11 @@ class CAGEFusionModel(nn.Module):
                 need_weights=True,
                 average_attn_weights=False,
             )
+            # Store the first loop's weights for plotting
             if i == 0:
                 graph_to_token_weights = g2t_weights
 
+            # Calculate regularization losses (only for graph-to-token for now)
             with torch.no_grad():
                 attn_log = torch.log(g2t_weights + 1e-8)
                 entropy = -torch.sum(g2t_weights * attn_log, dim=-1).mean()
@@ -338,16 +328,20 @@ class CAGEFusionModel(nn.Module):
                     )
                     token_prior_loss += -(g2t_weights * prior_scores).sum(dim=-1).mean()
 
+            # The bidirectional, gated update.
             if self.use_co_attention:
+                # --- MODIFIED: Capture token-to-graph attention weights ---
+                # Tokens query graph
                 c2g_out, t2g_weights = self.co_attn[i](
                     query=embedding_proj,
                     key=graph_queries,
                     value=graph_queries,
-                    need_weights=True,
+                    need_weights=True,  # Ask for the weights
                     average_attn_weights=False,
                 )
                 if i == 0:
                     token_to_graph_weights = t2g_weights
+                # ---------------------------------------------------------
 
                 gate_g = torch.sigmoid(
                     self.gate_graph[i](torch.cat([graph_queries, attn_out], dim=-1))
@@ -373,44 +367,18 @@ class CAGEFusionModel(nn.Module):
         flat = torch.cat(unpadded, dim=0)
         attn_output = self.attention_aggregation(flat, bmg.batch)
 
-        prompted_graph_repr = graph_repr
-        prompt_attn_weights = None
-
-        if self.use_fg_prompt:
-            # Generate functional group prompts
-            fg_prompt_tensor, prompt_attn_weights = self.fg_prompter(
-                smiles_batch=smiles_batch,  # <--- PASS THE NEW ARGUMENT
-                atom_features=atom_features,
-                bmg=bmg,  # <--- PASS THE BMG OBJECT
-                return_attn=return_attn,
-            )
-
-            # Scale the prompts by alpha
-            fg_prompt_tensor = fg_prompt_tensor * self.alpha
-
-            if torch.isnan(fg_prompt_tensor).any():
-                logger.error("Functional Group Prompt contains NaNs!")
-                fg_prompt_tensor = torch.nan_to_num(fg_prompt_tensor, nan=0.0)
-            # Add the prompts to the graph representation
-            prompted_graph_repr = graph_repr + fg_prompt_tensor
-
+        # --- MODIFIED THIS BLOCK ---
         tensors_to_fuse = [
-            self.scale_graph * prompted_graph_repr,
+            self.scale_graph * graph_repr,
             self.scale_attn * attn_output,
         ]
         if self.use_aux_features:
             tensors_to_fuse.append(self.scale_aux * aux_feats)
 
-        raw_fused = torch.cat(tensors_to_fuse, dim=1)
-
-        # --- APPLY GATING MECHANISM ---
-        gate = torch.sigmoid(self.fusion_gate(raw_fused))
-        fused = raw_fused * gate  # Element-wise multiplication
-        # ----------------------------
+        fused = torch.cat(tensors_to_fuse, dim=1)
+        # -------------------------
 
         fused = torch.nan_to_num(fused, nan=0.0, posinf=1e3, neginf=-1e3)
-        if torch.isnan(fused).any():
-            logger.error("Fused tensor contains NaNs BEFORE MLP!")
 
         # --- Prediction ---
         logits = self.output(self.fusion_mlp(fused))
@@ -421,24 +389,24 @@ class CAGEFusionModel(nn.Module):
             )
             raise ValueError("Output logits contain NaNs")
 
+        # --- MODIFIED: Update the return signature ---
         if return_attn:
             return (
                 logits,
                 attn_entropy_loss,
                 token_prior_loss,
-                graph_to_token_weights,
-                token_to_graph_weights,
+                graph_to_token_weights,  # The original weights
+                token_to_graph_weights,  # The new weights
                 attn_output,
                 graph_repr,
                 atom_features,
-                prompt_attn_weights,
             )
         else:
+            # Return None for all extra values if not returning attention
             return (
                 logits,
                 attn_entropy_loss,
                 token_prior_loss,
-                None,
                 None,
                 None,
                 None,
@@ -453,9 +421,11 @@ class CAGEFusionModel(nn.Module):
         This should be called once before training begins.
         """
         logger.info("Initializing modality scalers for balanced contribution...")
-        self.eval()
+        self.eval()  # Set the model to evaluation mode
 
+        # Get a single batch of data
         try:
+            # The local import is necessary to avoid circular dependency issues
             from cage_fusion.engine.utils import move_bmg_to_device
 
             bmg, sequence_embeddings, attn_mask, aux_feats, _, input_ids_batch, _ = (
@@ -465,6 +435,7 @@ class CAGEFusionModel(nn.Module):
             logger.warning("Data loader is empty, cannot initialize scalers.")
             return
 
+        # Move data to the correct device
         bmg = move_bmg_to_device(bmg, device)
         sequence_embeddings = sequence_embeddings.to(device)
         attn_mask = attn_mask.to(device)
@@ -472,6 +443,8 @@ class CAGEFusionModel(nn.Module):
         input_ids_batch = input_ids_batch.to(device)
 
         with torch.no_grad():
+            # Perform a forward pass to get the unscaled modality outputs.
+            # We need to request attention to get all the intermediate outputs.
             _, _, _, _, _, attn_output, graph_repr, _ = self.forward(
                 bmg=bmg,
                 sequence_embeddings=sequence_embeddings,
@@ -481,11 +454,14 @@ class CAGEFusionModel(nn.Module):
                 return_attn=True,
             )
 
+            # Calculate the mean L2 norm for each modality across the batch
             norm_graph = graph_repr.norm(p=2, dim=1).mean()
             norm_attn = attn_output.norm(p=2, dim=1).mean()
 
+            # Add a small epsilon to prevent division by zero
             epsilon = 1e-8
 
+            # Update the scaler parameters in-place to be the inverse of the norm
             self.scale_graph.data.fill_(1.0 / (norm_graph + epsilon))
             self.scale_attn.data.fill_(1.0 / (norm_attn + epsilon))
 
@@ -504,4 +480,4 @@ class CAGEFusionModel(nn.Module):
                     f"  Initial Aux Norm: {norm_aux:.4f} -> New Scaler: {self.scale_aux.item():.4f}"
                 )
 
-        self.train()
+        self.train()  # Return model to training mode

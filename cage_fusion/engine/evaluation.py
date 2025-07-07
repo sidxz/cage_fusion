@@ -18,6 +18,8 @@ from cage_fusion.viz.token_viz import (
     visualize_attention_weights,
 )
 
+from cage_fusion.viz.prompt_viz import visualize_fg_attention
+
 # ----------------------------------------------------
 
 
@@ -92,18 +94,29 @@ def evaluate_model(
             attn_mask=attn_mask,
             aux_feats=rdkit_feats,
             input_ids_batch=input_ids_batch,
+            smiles_batch=smiles_batch,
             return_attn=should_return_attn,
         )
 
         # Unpack the 7-item model output
-        logits, _, _, g2t_weights, t2a_weights, attn_output, graph_repr, _ = outputs
+        (
+            logits,
+            _,
+            _,
+            g2t_weights,
+            t2a_weights,
+            attn_output,
+            graph_repr,
+            _,
+            prompt_attn_weights,
+        ) = outputs
 
         if should_return_attn:
             # Select a random sample from the chosen batch for visualization
             random_sample_idx = random.randint(0, len(smiles_batch) - 1)
-            logger.info(
-                f"Visualizing random sample index {random_sample_idx} from batch {batch_idx}."
-            )
+            # logger.info(
+            #     f"Visualizing random sample index {random_sample_idx} from batch {batch_idx}."
+            # )
 
             plot_dir = os.path.join(cache_dir, "attention_plots_eval")
             os.makedirs(plot_dir, exist_ok=True)
@@ -143,7 +156,9 @@ def evaluate_model(
                         :num_top_tokens_to_plot
                     ]
                     # Get the full list of tokens for the molecule
-                    full_token_list_ids = input_ids_batch[random_sample_idx].cpu().numpy()
+                    full_token_list_ids = (
+                        input_ids_batch[random_sample_idx].cpu().numpy()
+                    )
 
                     # Step 2: Bundle the top token info together
                     # top_tokens_info = []
@@ -153,16 +168,20 @@ def evaluate_model(
                     #         [input_ids_batch[random_sample_idx][token_idx].item()]
                     #     )[0]
                     #     top_tokens_info.append((token_idx, token_str))
-                    actual_tokens_mask = full_token_list_ids != tokenizer_obj.pad_token_id
+                    actual_tokens_mask = (
+                        full_token_list_ids != tokenizer_obj.pad_token_id
+                    )
                     actual_tokens_ids = full_token_list_ids[actual_tokens_mask]
-                    full_token_list_str = tokenizer_obj.convert_ids_to_tokens(actual_tokens_ids)
+                    full_token_list_str = tokenizer_obj.convert_ids_to_tokens(
+                        actual_tokens_ids
+                    )
 
                     # Step 3: Make a single call to the new visualization function
                     visualize_top_token_attentions(
                         smiles=smiles_to_plot,
                         attention_weights=t2a_weights[random_sample_idx],
                         full_token_list=full_token_list_str,
-                        #top_tokens_info=top_tokens_info,
+                        # top_tokens_info=top_tokens_info,
                         top_token_indices=top_token_indices.cpu().numpy(),
                         output_dir=plot_dir,
                     )
@@ -170,6 +189,15 @@ def evaluate_model(
                     logger.warning(
                         "SMILES for the chosen random sample is empty. Skipping T2A visualization."
                     )
+            # Plot 3: Visualize functional group attention
+            if prompt_attn_weights and prompt_attn_weights[random_sample_idx]:
+                plot_path_fg = os.path.join(plot_dir, "fg_prompt_attention.png")
+                visualize_fg_attention(
+                    smiles=smiles_batch[random_sample_idx],
+                    prompt_attn_weights=prompt_attn_weights[random_sample_idx],
+                    output_path=plot_path_fg,
+                    title=f"Functional Group Attention (PROMPT)",
+                )
 
         loss = criterion(logits, labels)
         total_loss += loss.item()

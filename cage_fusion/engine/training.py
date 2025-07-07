@@ -1,9 +1,11 @@
+# training.py
 import os
 import torch
 from .evaluation import evaluate_model
 from .train_epoch import train_one_epoch
 from .logging import log_epoch_results, plot_training_history
 from cage_fusion.utils.logging_utils import logger
+from cage_fusion.engine.fg_utils import FG_NAMES  # Import FG_NAMES
 
 
 def train_model(
@@ -32,7 +34,7 @@ def train_model(
 
     os.makedirs(base_cache_dir, exist_ok=True)
     os.makedirs(checkpoint_dir, exist_ok=True)
-    
+
     checkpoint_path = os.path.join(checkpoint_dir, "latest_checkpoint.pt")
     best_model_path = os.path.join(checkpoint_dir, "best_model.pt")
     start_epoch = 1
@@ -91,14 +93,14 @@ def train_model(
     logger.info(
         f"Total trainable parameters: {sum(p.numel() for p in model.parameters() if p.requires_grad):,}"
     )
-
+    #torch.autograd.set_detect_anomaly(True)
     for epoch in range(start_epoch, num_epochs + 1):
         logger.info(f"{'='*25} Epoch {epoch}/{num_epochs} {'='*25}")
 
         train_cache = os.path.join(base_cache_dir, f"epoch_{epoch}_train")
         val_cache = os.path.join(base_cache_dir, f"epoch_{epoch}_val")
 
-        train_loss, train_mcc, train_auc, train_pr = train_one_epoch(
+        train_loss, train_mcc, train_auc, train_pr, top_fgs = train_one_epoch(
             model=model,
             loader=train_loader,
             optimizer=optimizer,
@@ -112,6 +114,20 @@ def train_model(
             lambda_prior=lambda_prior,
             label_names=label_names,
         )
+
+        if top_fgs:
+            logger.info("--- Top 5 Attended Functional Groups (Overall this Epoch) ---")
+            for i, (fg_id, avg_weight) in enumerate(top_fgs[:5]):
+                if fg_id < len(FG_NAMES):
+                    fg_name = FG_NAMES[fg_id]
+                    logger.info(
+                        f"  {i+1}. {fg_name:<25} | Average Attention: {avg_weight:.4f}"
+                    )
+                else:
+                    logger.warning(
+                        f"  Functional group ID {fg_id} is out of bounds for FG_NAMES."
+                    )
+            logger.info("-" * 65)
 
         (
             val_loss,
@@ -171,9 +187,7 @@ def train_model(
             best_val_auc = val_auc
             best_checkpoint_data = dict(checkpoint_data)  # shallow copy is OK here
             best_checkpoint_data["best_val_auc"] = best_val_auc
-            best_checkpoint_data["config"] = dict(
-                config
-            ) 
+            best_checkpoint_data["config"] = dict(config)
 
             torch.save(best_checkpoint_data, best_model_path)
             logger.info(
