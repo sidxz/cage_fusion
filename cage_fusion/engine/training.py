@@ -6,6 +6,11 @@ from .train_epoch import train_one_epoch
 from .logging import log_epoch_results, plot_training_history
 from cage_fusion.utils.logging_utils import logger
 from cage_fusion.engine.fg_utils import FG_NAMES  # Import FG_NAMES
+from rich.console import Console
+from rich.traceback import install
+
+install()
+console = Console()
 
 
 def train_model(
@@ -46,28 +51,113 @@ def train_model(
         checkpoint = torch.load(
             checkpoint_path, map_location=device, weights_only=False
         )
-        model.load_state_dict(checkpoint["model_state_dict"], strict=True)
 
-        optimizer.load_state_dict(checkpoint["optimizer_state_dict"])
-        scheduler.load_state_dict(checkpoint["scheduler_state_dict"])
-        history = checkpoint["history"]
-        best_val_auc = checkpoint.get("best_val_auc", -1.0)
-        start_epoch = checkpoint["epoch"] + 1
+        resume_with_new_arch = config.get("resume_with_new_arch", False)
+        if resume_with_new_arch:
+            console.log(
+                "[bold yellow]Resuming with new architecture. Loading compatible weights only.[/bold yellow]"
+            )
+            checkpoint_state_dict = checkpoint["model_state_dict"]
+            current_model_state_dict = model.state_dict()
 
-        for key in [
-            "scale_graph",
-            "scale_attn",
-            "scale_aux",
-            "val_norm_graph",
-            "val_norm_attn",
-            "val_norm_aux",
-        ]:
-            history.setdefault(key, [])
+            # Create a new state dict to hold the weights we can transfer
+            new_state_dict = {}
 
-        for state in optimizer.state.values():
-            for k, v in state.items():
-                if isinstance(v, torch.Tensor):
-                    state[k] = v.to(device)
+            for name, param in checkpoint_state_dict.items():
+                # Check if the layer exists in the new model
+                if name in current_model_state_dict:
+                    # Check if the weights have the same shape
+                    if current_model_state_dict[name].shape == param.shape:
+                        new_state_dict[name] = param
+                    else:
+                        console.log(
+                            f"   -> Skipping [red]{name}[/red] due to size mismatch: "
+                            f"Checkpoint shape: {param.shape}, "
+                            f"Model shape: {current_model_state_dict[name].shape}"
+                        )
+
+            # Load the compatible weights
+            model.load_state_dict(new_state_dict, strict=False)
+
+            console.log(
+                "[bold yellow]Optimizer state not loaded due to architecture change.[/bold yellow]"
+            )
+            # Do NOT load the optimizer state. The optimizer must be re-initialized
+            # because the model's parameters have changed.
+
+            # You can still resume from the last epoch number
+            start_epoch = checkpoint.get("epoch", 0) + 1
+            best_metric = checkpoint.get("best_metric", -1)
+
+            # set config.get("resume_with_new_arch", True)
+            config["resume_with_new_arch"] = False
+
+            if "history" in checkpoint:
+                history = checkpoint["history"]
+                # Make sure all expected keys exist
+                for key in [
+                    "scale_graph",
+                    "scale_attn",
+                    "scale_aux",
+                    "val_norm_graph",
+                    "val_norm_attn",
+                    "val_norm_aux",
+                    "train_loss",
+                    "val_loss",
+                    "train_mcc",
+                    "val_mcc",
+                    "train_auc",
+                    "val_auc",
+                    "train_pr",
+                    "val_pr",
+                    "per_task",
+                ]:
+                    history.setdefault(key, [])
+            else:
+                logger.warning(
+                    "Checkpoint does not contain history. Initializing empty history."
+                )
+                history = {
+                    "train_loss": [],
+                    "val_loss": [],
+                    "train_mcc": [],
+                    "val_mcc": [],
+                    "train_auc": [],
+                    "val_auc": [],
+                    "train_pr": [],
+                    "val_pr": [],
+                    "per_task": [],
+                    "scale_graph": [],
+                    "scale_attn": [],
+                    "scale_aux": [],
+                    "val_norm_graph": [],
+                    "val_norm_attn": [],
+                    "val_norm_aux": [],
+                }
+
+        else:
+            model.load_state_dict(checkpoint["model_state_dict"], strict=True)
+            optimizer.load_state_dict(checkpoint["optimizer_state_dict"])
+            scheduler.load_state_dict(checkpoint["scheduler_state_dict"])
+            history = checkpoint["history"]
+            best_val_auc = checkpoint.get("best_val_auc", -1.0)
+            start_epoch = checkpoint["epoch"] + 1
+
+            for state in optimizer.state.values():
+                for k, v in state.items():
+                    if isinstance(v, torch.Tensor):
+                        state[k] = v.to(device)
+
+            for key in [
+                "scale_graph",
+                "scale_attn",
+                "scale_aux",
+                "val_norm_graph",
+                "val_norm_attn",
+                "val_norm_aux",
+            ]:
+                history.setdefault(key, [])
+
     else:
         logger.info("No checkpoint found. Starting training from scratch.")
         history = {
@@ -93,7 +183,7 @@ def train_model(
     logger.info(
         f"Total trainable parameters: {sum(p.numel() for p in model.parameters() if p.requires_grad):,}"
     )
-    #torch.autograd.set_detect_anomaly(True)
+    # torch.autograd.set_detect_anomaly(True)
     for epoch in range(start_epoch, num_epochs + 1):
         logger.info(f"{'='*25} Epoch {epoch}/{num_epochs} {'='*25}")
 

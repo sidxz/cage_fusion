@@ -4,7 +4,7 @@ from pathlib import Path
 from rdkit import Chem
 
 # --- DYNAMIC INITIALIZATION FROM FILE ---
-fg_path = Path(__file__).parent.parent / "dt/pains.json"
+fg_path = Path(__file__).parent.parent / "dt/pains2.json"
 
 if not fg_path.is_file():
     sys.exit(f"❌ Error: Functional groups file not found at {fg_path.resolve()}")

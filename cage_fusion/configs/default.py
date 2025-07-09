@@ -27,11 +27,10 @@ def get_default_config():
         "num_heads": 8,  # Number of attention heads
         "cross_attn_dropout": 0.16,  # Dropout rate in cross-attention
         "proj_dropout": 0.06,  # Dropout rate in projection layers
-        "graph_only_mode": False,  # Use only graph features without token embeddings
-        "use_co_attention": True,  # Use Co-Attention mechanism
+        "use_co_attention": False,  # Use Co-Attention mechanism
         "use_aux_features": False,  # Use auxiliary features in the model
-        "use_fg_prompt": True,  # Use functional group prompts
-        "co_attention_layers": 2,  # Number of Co-Attention layers
+        "use_fg_prompt": False,  # Use functional group prompts
+        "co_attention_layers": 1,  # Number of Co-Attention layers
         "fusion_dropout_1": 0.2,  # Dropout rate in first fusion layer
         "fusion_dropout_2": 0.1,  # Dropout rate in second
         # === Training Hyperparameters ===
@@ -39,23 +38,22 @@ def get_default_config():
         "num_epochs": 50,  # Total number of training epochs
         "batch_size": 192,  # Number of samples per batch
         "warmup_fraction": 0.09,  # Warmup steps as a fraction of total steps
-        "clip_grad_norm": 1.0,  # Gradient clipping to prevent exploding gradients
         # Scaled Attention Factor
         "scaled_graph_factor": 18.0,  # Scaling factor for attention scores
         "scale_attn_factor": 1.0,  # Scaling factor for attention scores
-        "scale_aux_factor": 0.01,  # Scaling factor for auxiliary features
+        "scale_aux_factor": 1.0,  # Scaling factor for auxiliary features
         # === Attention Regularization ===
         "lambda_entropy": 0.0033,  # Entropy loss weight for attention sparsity
         "lambda_prior": 0.000,  # Prior loss weight using token importance
+        "scaled_fg_factor": 0.5,  # Scaling factor for functional group prompts
         # === Data Processing Settings ===
-        "max_seq_len": 512,  # Maximum sequence length for token inputs
-        "neg_to_pos_ratio": 3,  # Ratio of negative to positive samples in training
         # === Tokenizer & Model Checkpoint ===
         "model_checkpoint": "unikei/bert-base-smiles",  # Pretrained tokenizer/model checkpoint
         # === Execution Device ===
         "device": device_type,  # Automatically assigned device based on CUDA availability
         # === Optional Settings ===
         "token_importance_prior": None,  # Path to pre-computed token importance (optional)
+        "resume_with_new_arch": False,
     }
 
     return config
