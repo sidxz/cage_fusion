@@ -35,10 +35,14 @@ from cage_fusion.viz.token_viz import (
     visualize_contributions,
 )
 
-from cage_fusion.viz.token_viz_v1 import (
+from cage_fusion.viz.token_viz import (
     visualize_top_token_attentions,
     visualize_attention_weights,
+    visualize_total_atom_contribution,
+    visualize_combined_atom_contribution
 )
+
+
 from cage_fusion.viz.prompt_viz import visualize_fg_attention
 from cage_fusion.utils.logging_utils import logger
 from cage_fusion.engine.utils import move_bmg_to_device
@@ -242,70 +246,22 @@ def predict_smiles(
                             top_token_indices=top_token_indices.cpu().numpy(),
                             output_dir=sample_plot_dir,
                         )
-                        full_token_list_ids = input_ids[j].cpu().numpy()
-                        actual_tokens_mask = (
-                            full_token_list_ids != tokenizer.pad_token_id
-                        )
-                        actual_tokens_ids = full_token_list_ids[actual_tokens_mask]
-                        full_token_list_str = tokenizer.convert_ids_to_tokens(
-                            actual_tokens_ids
-                        )
-                        predicted_logits = logits[j]
-                        predicted_probs = torch.sigmoid(predicted_logits)
-                        predicted_class = (
-                            (predicted_probs > 0.5).int().cpu().numpy()
-                        )  # shape: [n_tasks] or scalar
-
-                        # --- TOKEN MASK: valid (unpadded, not special) tokens ---
-                        token_ids_j = input_ids[j].cpu().numpy()
-                        attn_mask_j = (
-                            attn_mask[j].cpu().numpy().astype(bool)
-                        )  # True for valid
-                        special_ids = [
-                            tokenizer.pad_token_id,
-                            tokenizer.cls_token_id,
-                            tokenizer.sep_token_id,
-                        ]
-                        token_mask_j = np.array(
-                            [
-                                (m and (tid not in special_ids))
-                                for m, tid in zip(attn_mask_j, token_ids_j)
-                            ]
+                        # Step 4 Total attention contribution
+                        attn = t2a_weights[j]
+                        if attn.ndim == 3:  # [n_heads, n_tokens, n_atoms]
+                            attn = attn.mean(axis=0)
+                        # Get logit or predicted value for this sample
+                        logit_vec = logits[j].detach().cpu().numpy()
+                        task_idx = np.argmax(np.abs(logit_vec))  # abs() finds the most extreme value, or remove abs() for just highest positive
+                        pred_logit = logit_vec[task_idx]  # this will be a scalar
+                        visualize_total_atom_contribution(
+                            smiles=smiles_to_plot,
+                            t2a_weights_sample=attn,
+                            pred_logit=pred_logit,
+                            output_path=os.path.join(sample_plot_dir, "atom_total_contrib.png")
                         )
 
-                        # --- ATOM MASK: for RDKit, valid atoms are just range(num_atoms) ---
-                        smiles = smiles_batch[j]
-                        num_atoms = Chem.MolFromSmiles(smiles).GetNumAtoms()
-                        atom_mask_j = np.arange(
-                            num_atoms
-                        )  # (or, if you had padding, handle accordingly)
-                        # --- TOKEN to ATOM: attention_weights = t2a_weights[j] (shape [n_token, n_atom]) ---
-                        visualize_contributions(
-                            smiles=smiles_batch[j],
-                            token_ids=actual_tokens_ids,
-                            attention_weights=t2a_weights[j].mean(axis=0),
-                            tokenizer_obj=tokenizer,
-                            predicted_class=predicted_class,
-                            output_dir=sample_plot_dir,
-                            direction="token_to_atom",
-                            token_mask=token_mask_j,
-                            atom_mask=atom_mask_j,
-                            # optionally, mask arrays if available
-                        )
-
-                        # --- ATOM to TOKEN: use g2t_weights[j] (shape [n_graph, n_token]) and transpose ---
-                        visualize_contributions(
-                            smiles=smiles_batch[j],
-                            token_ids=actual_tokens_ids,
-                            attention_weights=t2a_weights[j].mean(axis=0),
-                            tokenizer_obj=tokenizer,
-                            predicted_class=predicted_class,
-                            output_dir=sample_plot_dir,
-                            direction="atom_to_token",
-                            token_mask=token_mask_j,
-                            atom_mask=atom_mask_j,
-                            # optionally, mask arrays if available
-                        )
+                        
 
                     if prompt_attn_weights and prompt_attn_weights[j]:
                         plot_path_fg = os.path.join(
@@ -316,6 +272,21 @@ def predict_smiles(
                             prompt_attn_weights=prompt_attn_weights[j],
                             output_path=plot_path_fg,
                             title=f"Functional Group Attention (PROMPT)",
+                        )
+                        
+                        
+                        weight_fg = float(model.alpha.detach().cpu().item())
+                        weight_t2a = float(model.scale_graph.detach().cpu().item())
+
+                        visualize_combined_atom_contribution(
+                            smiles=smiles_to_plot,
+                            t2a_weights_sample=attn,
+                            pred_logit=pred_logit,
+                            prompt_attn_weights=prompt_attn_weights[j],
+                            output_path=os.path.join(sample_plot_dir, "atom_combined_contrib.png"),
+                            weight_t2a=weight_t2a,
+                            weight_fg=weight_fg,
+
                         )
 
             sample_idx_offset += len(smiles_batch)
