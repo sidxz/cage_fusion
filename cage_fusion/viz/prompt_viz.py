@@ -147,8 +147,8 @@ def visualize_fg_attention(
     draw = ImageDraw.Draw(final_image)
 
     # --- Header ---
-    draw.text((30, 20), title, font=title_font, fill="black")
-    draw.text((30, 60), f"SMILES: {smiles}", font=text_font, fill="dimgray")
+    #draw.text((30, 20), title, font=title_font, fill="black")
+    #draw.text((30, 60), f"SMILES: {smiles}", font=text_font, fill="dimgray")
 
     # --- Molecule Image ---
     final_image.paste(mol_image, (0, header_height), mol_image)
