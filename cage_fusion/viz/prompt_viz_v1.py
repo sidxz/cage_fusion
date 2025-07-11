@@ -5,7 +5,6 @@ from rdkit import Chem
 from rdkit.Chem import Draw
 from rdkit.Chem.Draw import rdMolDraw2D
 import matplotlib.cm as cm
-import matplotlib.colors as mcolors
 from PIL import Image, ImageDraw, ImageFont
 
 # Make sure to adjust the import paths if they differ in your project
@@ -17,16 +16,13 @@ def visualize_fg_attention(
     smiles: str,
     prompt_attn_weights: dict,
     output_path: str,
-    title: str = "Functional Group Attention Coefficients",
-    top_n: int = 5,
+    title: str = "Top Functional Group Attentions",
+    top_n: int = 3,
 ):
     """
-    Generates a composite image showing the molecule with functional groups
-    highlighted based on their attention coefficients, as described in
-    Tang et al. J Cheminform (2020) 12:15.
-
-    The color indicates whether a group's contribution is above (red) or
-    below (blue) the average attention for this molecule.
+    Generates a composite image showing the molecule with top N attended
+    functional groups highlighted. Highlight color is a continuous block
+    proportional to attention weight.
     """
     mol = Chem.MolFromSmiles(smiles)
     if not mol:
@@ -40,19 +36,26 @@ def visualize_fg_attention(
         logger.info("No functional groups to visualize for this molecule.")
         return
 
-    # --- 1. Calculate Attention Coefficients ---
-    average_attention = np.mean(weights)
-    attention_coefficients = weights - average_attention
-
+    # --- 1. Top N Functional Groups and Normalize Weights ---
+    # Ensure top_n is not greater than the number of available functional groups
     num_fgs = len(fg_ids)
     actual_top_n = min(top_n, num_fgs)
 
-    # Sort by the *magnitude* of the coefficient to find the most influential FGs
-    top_indices = np.argsort(np.abs(attention_coefficients))[-actual_top_n:][::-1]
+    top_indices = np.argsort(weights)[-actual_top_n:][::-1]
+    top_weights = weights[top_indices]
+
+    # Handle the case where all top weights are the same to avoid division by zero
+    if top_weights.max() == top_weights.min():
+        norm_weights = np.full_like(top_weights, 0.5)
+    else:
+        norm_weights = 0.2 + 0.8 * (
+            (top_weights - top_weights.min()) / (top_weights.max() - top_weights.min())
+        )
 
     top_fg_data = []
-    for idx in top_indices:
+    for i, idx in enumerate(top_indices):
         fg_id = fg_ids[idx]
+        # --- FIX: Access FG_NAMES by index, not with .get() ---
         fg_name = FG_NAMES[fg_id] if fg_id < len(FG_NAMES) else f"FG_{fg_id}"
         fg_pattern = FG_SMARTS.get(fg_name)
 
@@ -61,22 +64,18 @@ def visualize_fg_attention(
                 {
                     "name": fg_name,
                     "pattern": fg_pattern,
-                    "coefficient": float(attention_coefficients[idx]),
+                    "attention": float(weights[idx]),
+                    "norm_weight": float(norm_weights[i]),
                 }
             )
 
-    # --- 2. Drawing Highlights using a Diverging Colormap ---
+    # --- 2. Drawing Highlights ---
     highlight_atoms, highlight_bonds = [], []
     atom_colors, bond_colors = {}, {}
-    # Use a blue-white-red colormap, perfect for showing deviation from a central point (zero)
-    colormap = cm.get_cmap("bwr")
-
-    # Find the maximum absolute coefficient to normalize the color scale from -max_abs to +max_abs
-    max_abs_coeff = (
-        max(abs(d["coefficient"]) for d in top_fg_data) if top_fg_data else 1.0
-    )
+    colormap = cm.get_cmap("Greens")
 
     for data in top_fg_data:
+        # Ensure pattern is a Mol object
         patt = (
             Chem.MolFromSmarts(data["pattern"])
             if isinstance(data["pattern"], str)
@@ -89,15 +88,12 @@ def visualize_fg_attention(
         if not matches:
             continue
 
-        # Normalize coefficient from -max_abs to +max_abs -> 0 to 1 for the colormap
-        # 0 -> blue, 0.5 -> white, 1.0 -> red
-        norm_coeff = 0.5 * (data["coefficient"] / (max_abs_coeff + 0.00000001) + 1.0)
-        color = colormap(norm_coeff)
+        color = colormap(data["norm_weight"])
         data["display_color"] = color
 
         for match in matches:
             for atom_idx in match:
-                if atom_idx not in atom_colors:
+                if atom_idx not in atom_colors:  # Prioritize higher attention colors
                     atom_colors[atom_idx] = color
 
             for bond in mol.GetBonds():
@@ -157,7 +153,7 @@ def visualize_fg_attention(
     y_cursor = header_height + mol_image.height + 20
     draw.text(
         (30, y_cursor),
-        "Top Influential Functional Groups (by Attention Coefficient)",
+        "Top Functional Group Highlights",
         font=title_font.font_variant(size=18),
         fill="black",
     )
@@ -171,18 +167,15 @@ def visualize_fg_attention(
             [30, y_cursor, 50, y_cursor + 20], fill=color_rgb, outline="dimgray"
         )
 
-        sign = "+" if data["coefficient"] >= 0 else ""
-        info_text = f"{data['name']} (Coefficient: {sign}{data['coefficient']:.3f})"
+        info_text = f"{data['name']} (Attention: {data['attention']:.1%})"
         draw.text((65, y_cursor), info_text, font=legend_font, fill="black")
         y_cursor += 22
-
-        # Display SMARTS for clarity
         patt = (
             Chem.MolFromSmarts(data["pattern"])
             if isinstance(data["pattern"], str)
             else data["pattern"]
         )
-        smarts_str = Chem.MolToSmarts(patt) if patt else "N/A"
+        smarts_str = Chem.MolToSmarts(patt)
         draw.text(
             (65, y_cursor),
             f"SMARTS: {smarts_str}",
@@ -193,3 +186,4 @@ def visualize_fg_attention(
 
     # --- Save ---
     final_image.save(output_path)
+    # logger.info(f"Saved detailed functional group attention to {output_path}")

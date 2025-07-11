@@ -19,6 +19,7 @@ from rich.traceback import install
 import shutil
 from tqdm import tqdm
 from typing import List, Optional
+from rdkit import Chem
 
 # Add project root to the Python path
 project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
@@ -31,9 +32,17 @@ from cage_fusion.models import CAGEFusionModel
 from cage_fusion.engine.dataset import CageFusionStreamingDataset
 from cage_fusion.engine.data_utils import collate_fn_for_cage_fusion
 from cage_fusion.viz.token_viz import (
+    visualize_contributions,
+)
+
+from cage_fusion.viz.token_viz import (
     visualize_top_token_attentions,
     visualize_attention_weights,
+    visualize_total_atom_contribution,
+    visualize_combined_atom_contribution
 )
+
+
 from cage_fusion.viz.prompt_viz import visualize_fg_attention
 from cage_fusion.utils.logging_utils import logger
 from cage_fusion.engine.utils import move_bmg_to_device
@@ -237,13 +246,47 @@ def predict_smiles(
                             top_token_indices=top_token_indices.cpu().numpy(),
                             output_dir=sample_plot_dir,
                         )
+                        # Step 4 Total attention contribution
+                        attn = t2a_weights[j]
+                        if attn.ndim == 3:  # [n_heads, n_tokens, n_atoms]
+                            attn = attn.mean(axis=0)
+                        # Get logit or predicted value for this sample
+                        logit_vec = logits[j].detach().cpu().numpy()
+                        task_idx = np.argmax(np.abs(logit_vec))  # abs() finds the most extreme value, or remove abs() for just highest positive
+                        pred_logit = logit_vec[task_idx]  # this will be a scalar
+                        visualize_total_atom_contribution(
+                            smiles=smiles_to_plot,
+                            t2a_weights_sample=attn,
+                            pred_logit=pred_logit,
+                            output_path=os.path.join(sample_plot_dir, "atom_total_contrib.png")
+                        )
+
+                        
+
                     if prompt_attn_weights and prompt_attn_weights[j]:
-                        plot_path_fg = os.path.join(sample_plot_dir, "fg_prompt_attention.png")
+                        plot_path_fg = os.path.join(
+                            sample_plot_dir, "fg_prompt_attention.png"
+                        )
                         visualize_fg_attention(
                             smiles=smiles_batch[j],
                             prompt_attn_weights=prompt_attn_weights[j],
                             output_path=plot_path_fg,
                             title=f"Functional Group Attention (PROMPT)",
+                        )
+                        
+                        
+                        weight_fg = float(model.alpha.detach().cpu().item())
+                        weight_t2a = float(model.scale_graph.detach().cpu().item())
+
+                        visualize_combined_atom_contribution(
+                            smiles=smiles_to_plot,
+                            t2a_weights_sample=attn,
+                            pred_logit=pred_logit,
+                            prompt_attn_weights=prompt_attn_weights[j],
+                            output_path=os.path.join(sample_plot_dir, "atom_combined_contrib.png"),
+                            weight_t2a=weight_t2a,
+                            weight_fg=weight_fg,
+
                         )
 
             sample_idx_offset += len(smiles_batch)

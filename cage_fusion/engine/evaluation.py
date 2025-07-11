@@ -16,7 +16,10 @@ from .utils import (
 from cage_fusion.viz.token_viz import (
     visualize_top_token_attentions,
     visualize_attention_weights,
+    visualize_total_atom_contribution,
+    visualize_combined_atom_contribution
 )
+
 
 from cage_fusion.viz.prompt_viz import visualize_fg_attention
 
@@ -185,6 +188,21 @@ def evaluate_model(
                         top_token_indices=top_token_indices.cpu().numpy(),
                         output_dir=plot_dir,
                     )
+                    
+                    # Step 4 Total attention contribution
+                    attn = t2a_weights[random_sample_idx]
+                    if attn.ndim == 3:  # [n_heads, n_tokens, n_atoms]
+                        attn = attn.mean(axis=0)
+                    # Get logit or predicted value for this sample
+                    logit_vec = logits[random_sample_idx].detach().cpu().numpy()
+                    task_idx = np.argmax(np.abs(logit_vec))  # abs() finds the most extreme value, or remove abs() for just highest positive
+                    pred_logit = logit_vec[task_idx]  # this will be a scalar
+                    visualize_total_atom_contribution(
+                        smiles=smiles_to_plot,
+                        t2a_weights_sample=attn,
+                        pred_logit=pred_logit,
+                        output_path=os.path.join(plot_dir, "atom_total_contrib.png")
+                    )
                 else:
                     logger.warning(
                         "SMILES for the chosen random sample is empty. Skipping T2A visualization."
@@ -197,6 +215,20 @@ def evaluate_model(
                     prompt_attn_weights=prompt_attn_weights[random_sample_idx],
                     output_path=plot_path_fg,
                     title=f"Functional Group Attention (PROMPT)",
+                )
+                
+                weight_fg = float(model.alpha.detach().cpu().item())
+                weight_t2a = float(model.scale_graph.detach().cpu().item())
+
+                visualize_combined_atom_contribution(
+                    smiles=smiles_to_plot,
+                    t2a_weights_sample=attn,
+                    pred_logit=pred_logit,
+                    prompt_attn_weights=prompt_attn_weights[random_sample_idx],
+                    output_path=os.path.join(plot_dir, "atom_combined_contrib.png"),
+                    weight_t2a=weight_t2a,
+                    weight_fg=weight_fg,
+
                 )
 
         loss = criterion(logits, labels)
