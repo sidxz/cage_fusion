@@ -16,6 +16,8 @@ import traceback
 import argparse
 import random
 from collections import Counter
+from rich.table import Table
+from rich.console import Console
 
 # ======== Configurable Paths and Variables ========
 DATA_ROOT = "data"  # Top-level data directory
@@ -25,18 +27,16 @@ FEATURES_ROOT = os.path.join(DATA_ROOT, "features")
 CHECKPOINTS_ROOT = "checkpoints"
 OUTPUT_ROOT = "output"
 DEFAULT_DATASET = "bace_classification"
-DEFAULT_SEED = 42
+DEFAULT_SEED = 54
 DEFAULT_FORCE_RERUN = False
 DEFAULT_RERUN_TRAIN = False
 DEFAULT_SPLITTER = "scaffold"
 DEFAULT_BATCH_SIZE = 256
 DEFAULT_NUM_EPOCHS = 25
 DEFAULT_LR = 1e-5
-DEFAULT_WARMUP_FRAC = 0.1
 MODEL_BEST = "best_model.pt"
 MODEL_LATEST = "latest_checkpoint.pt"
 MIN_TOKEN_FREQ = 10
-GRAPH_ONLY_MODE = False  # Set to True to run in graph-only mode
 
 # ======== Project Path Setup ========
 project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
@@ -139,22 +139,22 @@ def load_moleculenet_dataset(dataset_name, data_dir, seed, splitter):
         sys.exit(1)
 
 
+from rich.table import Table
+from rich.console import Console
+
+
 def run_final_evaluation(checkpoint_path, title, test_loader, device, cache_dir):
     """
     Load model from checkpoint and evaluate on test set.
     """
+    console = Console()
     console.rule(f"[bold green]Final Evaluation on Test Set ({title})")
     if not os.path.exists(checkpoint_path):
         logger.error(f"{title} checkpoint not found: {checkpoint_path}")
         return
 
     checkpoint = torch.load(checkpoint_path, map_location=device, weights_only=False)
-
-    # Load the configuration from the checkpoint file for robust reloading.
     config = checkpoint["config"]
-    # Forcibly enable co-attention to guarantee visualization plots are generated.
-    config["use_co_attention"] = True
-
     best_thresholds = checkpoint.get("best_thresholds")
     logger.info(f"Best thresholds: {best_thresholds}")
 
@@ -163,23 +163,29 @@ def run_final_evaluation(checkpoint_path, title, test_loader, device, cache_dir)
     model.eval()
     logger.info(f"Loaded {title} model from epoch {checkpoint['epoch']}")
 
-    # Need tokenizer for visualization
     tokenizer = AutoTokenizer.from_pretrained(config["model_checkpoint"])
-
     criterion = torch.nn.BCEWithLogitsLoss()
-    (test_loss, test_mcc, test_auc, test_pr, _, per_task_metrics, _, _, _) = (
-        evaluate_model(
-            model=model,
-            loader=test_loader,
-            criterion=criterion,
-            device=device,
-            num_tasks=config["num_tasks"],
-            label_names=config["tasks"],
-            use_precomputed_thresholds=best_thresholds,
-            cache_dir=os.path.join(cache_dir, f"test_eval_{title.lower()}"),
-            plot_attn=True,  # Always plot for final eval
-            tokenizer_obj=tokenizer,
-        )
+    (
+        test_loss,
+        test_mcc,
+        test_auc,
+        test_pr,
+        _,  # test_preds
+        per_task_metrics,
+        _,  # attn
+        _,  # barplot_paths
+        _,  # topk_tables
+    ) = evaluate_model(
+        model=model,
+        loader=test_loader,
+        criterion=criterion,
+        device=device,
+        num_tasks=config["num_tasks"],
+        label_names=config["tasks"],
+        use_precomputed_thresholds=best_thresholds,
+        cache_dir=os.path.join(cache_dir, f"test_eval_{title.lower()}"),
+        plot_attn=True,  # Always plot for final eval
+        tokenizer_obj=tokenizer,
     )
 
     console.rule(f"[bold magenta]Final Test Set Results ({title})")
@@ -187,13 +193,32 @@ def run_final_evaluation(checkpoint_path, title, test_loader, device, cache_dir)
         f"  Test Loss: {test_loss:.4f}, Test AUC: {test_auc:.4f}, Test MCC: {test_mcc:.4f}"
     )
     if per_task_metrics:
-        task_table = Table(title=f"Per-Task Test Metrics ({title})")
-        for col in ["Task", "AUC", "MCC", "PR-AUC"]:
-            task_table.add_column(col)
+        task_table = Table(
+            title=f"Per-Task Test Metrics ({title})",
+            header_style="bold green",
+            show_footer=False,
+        )
+        task_table.add_column("Task", style="cyan")
+        task_table.add_column("ROC-AUC", style="magenta", justify="right")
+        task_table.add_column("MCC", style="yellow", justify="right")
+        task_table.add_column("PR-AUC", style="green", justify="right")
+
         for i, (mcc, auc, pr) in enumerate(per_task_metrics):
-            task_table.add_row(
-                f"{config['tasks'][i]}", f"{auc:.3f}", f"{mcc:.3f}", f"{pr:.3f}"
+            task = (
+                config["tasks"][i]
+                if "tasks" in config and i < len(config["tasks"])
+                else f"Task {i}"
             )
+            task_table.add_row(task, f"{auc:.3f}", f"{mcc:.3f}", f"{pr:.3f}")
+
+        # Macro averages row (add separator for clarity)
+        task_table.add_section()
+        task_table.add_row(
+            "[bold]Macro-Avg[/bold]",
+            f"[bold]{test_auc:.4f}[/bold]",
+            f"[bold]{test_mcc:.4f}[/bold]",
+            f"[bold]{test_pr:.4f}[/bold]",
+        )
         console.print(task_table)
 
 
@@ -204,10 +229,6 @@ def run_benchmark(dataset_name, seed, force_rerun, rerun_train, splitter):
     # Directory for this run
     config = get_default_config()
 
-    # Set co-attention to True to ensure it's enabled for the entire run.
-    config["use_co_attention"] = True
-
-    config["graph_only_mode"] = GRAPH_ONLY_MODE
     run_id = f"{dataset_name}_seed{seed}"
 
     config["base_cache_dir"] = os.path.join(CACHE_ROOT, run_id)
@@ -279,7 +300,6 @@ def run_benchmark(dataset_name, seed, force_rerun, rerun_train, splitter):
     config["batch_size"] = DEFAULT_BATCH_SIZE
     config["num_epochs"] = DEFAULT_NUM_EPOCHS
     config["learning_rate"] = DEFAULT_LR
-    config["warmup_fraction"] = DEFAULT_WARMUP_FRAC
 
     console.rule("[bold yellow]Featurization and Setup")
     tokenizer = AutoTokenizer.from_pretrained(config["model_checkpoint"])

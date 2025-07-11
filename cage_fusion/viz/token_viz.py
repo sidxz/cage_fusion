@@ -18,6 +18,7 @@ import matplotlib.pyplot as plt
 import seaborn as sns
 from chemprop.data import BatchMolGraph
 from cage_fusion.utils.logging_utils import logger
+from typing import List, Optional
 
 
 def visualize_attention_weights(
@@ -301,3 +302,137 @@ def _stitch_images(img1_path, img2_path, img3_path, output_dir):
         for p in [img1_path, img2_path, img3_path]:
             if os.path.exists(p):
                 os.remove(p)
+
+
+def visualize_contributions(
+    smiles: str,
+    token_ids: list,
+    attention_weights,
+    tokenizer_obj,
+    predicted_class,
+    output_dir: str,
+    direction: str = "token_to_atom",  # or "atom_to_token"
+    token_mask: "Optional[np.ndarray]" = None,
+    atom_mask: "Optional[np.ndarray]" = None,
+    top_k: "Optional[int]" = 6,
+):
+
+    os.makedirs(output_dir, exist_ok=True)
+
+    # --- 1. Prepare attention array and orient to [n_tokens, n_atoms] ---
+    if isinstance(attention_weights, torch.Tensor):
+        attn = attention_weights.detach().cpu().numpy()
+    else:
+        attn = np.array(attention_weights)
+    attn = np.squeeze(attn)
+    if attn.ndim != 2:
+        raise ValueError(f"Expected attention matrix to be 2D, got shape {attn.shape}")
+
+    if direction == "token_to_atom":
+        n_tokens, n_atoms = attn.shape
+    elif direction == "atom_to_token":
+        n_atoms, n_tokens = attn.shape
+        attn = attn.T
+    else:
+        raise ValueError("direction must be 'token_to_atom' or 'atom_to_token'")
+
+    # --- 2. Get molecule and ensure we never use indices out of bounds ---
+    mol = Chem.MolFromSmiles(smiles)
+    if mol is None:
+        print(f"[❌] Could not parse SMILES: {smiles}")
+        return
+    num_atoms = mol.GetNumAtoms()
+    max_atoms = min(num_atoms, n_atoms)
+    max_tokens = n_tokens  # Do not index beyond attn.shape[0] anyway
+
+    # --- 3. Build valid index arrays, never out of bounds ---
+    valid_atom_idxs = np.arange(max_atoms)
+    valid_token_idxs = (
+        np.arange(max_tokens)
+        if token_mask is None
+        else np.where(token_mask[:max_tokens])[0]
+    )
+
+    # --- 4. Center over valid atoms for each token (row-wise mean) ---
+    centered_attn = attn.copy()
+    for t in valid_token_idxs:
+        mean_over_valid_atoms = (
+            np.mean(attn[t, valid_atom_idxs]) if len(valid_atom_idxs) > 0 else 0
+        )
+        centered_attn[t, :] -= mean_over_valid_atoms
+
+    # --- 5. Class sign (positive:1/negative:-1) ---
+    sign = 1 if np.any(predicted_class) else -1
+    signed_attn = sign * centered_attn
+
+    # --- 6. Contributions (never index out of bounds!) ---
+    atom_contribs = np.zeros(n_atoms)
+    if len(valid_token_idxs) > 0:
+        # Only sum over valid atoms!
+        atom_contribs[valid_atom_idxs] = signed_attn[valid_token_idxs][
+            :, valid_atom_idxs
+        ].sum(axis=0)
+    token_contribs = np.zeros(n_tokens)
+    if len(valid_atom_idxs) > 0:
+        token_contribs[valid_token_idxs] = signed_attn[valid_token_idxs][
+            :, valid_atom_idxs
+        ].sum(axis=1)
+
+    # --- 7. Normalize ONLY over valid entries ---
+    def _normalize(x, mask):
+        maxval = np.max(np.abs(x[mask])) if len(mask) > 0 else 1.0
+        if maxval < 1e-8:
+            return x  # avoid division by zero
+        x = x.copy()
+        x[mask] = x[mask] / maxval
+        return x
+
+    atom_contribs = _normalize(atom_contribs, valid_atom_idxs)
+    token_contribs = _normalize(token_contribs, valid_token_idxs)
+
+    # --- 8. Draw molecule with colored atoms (only valid atom indices, all int) ---
+    drawer = rdMolDraw2D.MolDraw2DCairo(500, 300)
+    drawer.drawOptions().addAtomIndices = True
+    atom_colors = {}
+    for i in valid_atom_idxs:
+        idx = int(i)
+        val = float(atom_contribs[idx])
+        color = (1.0, 0.0, 0.0) if val > 0 else (0.0, 0.0, 1.0)
+        atom_colors[idx] = tuple(abs(val) * np.array(color))
+    highlight_atoms = list(atom_colors.keys())
+
+    drawer.DrawMolecule(
+        mol, highlightAtoms=highlight_atoms, highlightAtomColors=atom_colors
+    )
+    drawer.FinishDrawing()
+    mol_img_path = os.path.join(output_dir, f"mol_contribution_{direction}.png")
+    with open(mol_img_path, "wb") as f:
+        f.write(drawer.GetDrawingText())
+
+    # --- 9. Bar plot for token contributions (only valid tokens) ---
+    tokens_for_labels = tokenizer_obj.convert_ids_to_tokens(
+        [tid for idx, tid in enumerate(token_ids) if idx in valid_token_idxs]
+    )
+    contribs_for_plot = token_contribs[valid_token_idxs]
+    plt.figure(figsize=(max(6, 0.3 * len(tokens_for_labels)), 1.7))
+    plt.bar(
+        range(len(contribs_for_plot)),
+        contribs_for_plot,
+        color=["red" if x > 0 else "blue" for x in contribs_for_plot],
+    )
+    plt.xticks(
+        range(len(tokens_for_labels)), tokens_for_labels, rotation=90, fontsize=8
+    )
+    plt.title(f"Token Contribution ({direction.replace('_', '→')})")
+    plt.tight_layout()
+    token_img_path = os.path.join(output_dir, f"token_contribution_{direction}.png")
+    plt.savefig(token_img_path)
+    plt.close()
+
+    # --- 10. Save contributions ---
+    # np.save(os.path.join(output_dir, f"atom_contribs_{direction}.npy"), atom_contribs)
+    # np.save(os.path.join(output_dir, f"token_contribs_{direction}.npy"), token_contribs)
+
+    print(f"[✅] Saved visualization to {output_dir}")
+
+    return atom_contribs, token_contribs

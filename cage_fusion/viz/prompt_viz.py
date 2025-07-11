@@ -91,7 +91,7 @@ def visualize_fg_attention(
 
         # Normalize coefficient from -max_abs to +max_abs -> 0 to 1 for the colormap
         # 0 -> blue, 0.5 -> white, 1.0 -> red
-        norm_coeff = 0.5 * (data["coefficient"] / max_abs_coeff + 1.0)
+        norm_coeff = 0.5 * (data["coefficient"] / (max_abs_coeff + 0.00000001) + 1.0)
         color = colormap(norm_coeff)
         data["display_color"] = color
 

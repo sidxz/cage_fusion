@@ -18,6 +18,7 @@ from cage_fusion.viz.token_viz import (
     visualize_attention_weights,
 )
 
+
 from cage_fusion.viz.prompt_viz import visualize_fg_attention
 
 # ----------------------------------------------------
