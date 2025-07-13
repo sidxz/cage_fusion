@@ -445,6 +445,10 @@ from rdkit import Chem
 from rdkit.Chem.Draw import rdMolDraw2D
 import matplotlib.cm as cm
 
+def minmax_neg1_1(x):
+    x = np.asarray(x)
+    minv, maxv = x.min(), x.max()
+    return 2 * (x - minv) / (maxv - minv + 1e-8) - 1
 
 def visualize_total_atom_contribution(
     smiles,
@@ -480,7 +484,7 @@ def visualize_total_atom_contribution(
     sign = 1 if pred_logit > 0 else -1
     atom_contribs = sign * atom_scores
     vmax = np.abs(atom_contribs).max() if n_atoms > 0 else 1.0
-    norm = atom_contribs / (vmax + 1e-8)
+    norm = minmax_neg1_1(atom_contribs)
     cmap = cm.get_cmap("bwr")
     atom_colors = {}
 
@@ -623,7 +627,10 @@ def visualize_combined_atom_contribution(
         return
 
     # --- 3. Weighted sum ---
-    total_atom_contribs = weight_t2a * model_atom_contribs + weight_fg * fg_atom_contribs
+    model_atom_contribs_norm = minmax_neg1_1(model_atom_contribs)
+    fg_atom_contribs_norm = minmax_neg1_1(fg_atom_contribs)
+
+    total_atom_contribs = weight_t2a * model_atom_contribs_norm + weight_fg * fg_atom_contribs_norm
     vmax = np.abs(total_atom_contribs).max() if n_atoms > 0 else 1.0
     norm = total_atom_contribs / (vmax + 1e-8)
     cmap = cm.get_cmap("bwr")

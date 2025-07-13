@@ -21,7 +21,8 @@ def get_default_config():
     config = {
         # === Model Hyperparameters ===
         "graph_dim": 300,  # Dimension of graph features
-        "embedding_dim": 768,  # Token embedding size
+        #"embedding_dim": 768,  # Token embedding size -> unikei/bert-base-smiles
+        "embedding_dim": 384,  # Token embedding size -> DeepChem/ChemBERTa-77M-MTR
         "aux_feature_dim": 217,  # Dimension of auxiliary features
         "num_tasks": 4,  # Number of prediction tasks
         "num_heads": 8,  # Number of attention heads
@@ -35,7 +36,7 @@ def get_default_config():
         # === Scaled Attention Factor ===
         "scaled_graph_factor": 1.0,  # Scaling factor for attention scores
         "scale_attn_factor": 0.1,  # Scaling factor for attention scores
-        "scale_aux_factor": 0.1,  # Scaling factor for auxiliary features
+        "scale_aux_factor": 0.05,  # Scaling factor for auxiliary features
         "scaled_fg_factor": 1.0,  # Scaling factor for functional group prompts
         # === Fusion Layer Settings ===
         "fusion_dropout_1": 0.1,  # Dropout rate in first fusion layer
@@ -50,7 +51,8 @@ def get_default_config():
         "lambda_prior": 0.000,  # Prior loss weight using token importance
         # === Data Processing Settings ===
         # === Tokenizer & Model Checkpoint ===
-        "model_checkpoint": "unikei/bert-base-smiles",  # Pretrained tokenizer/model checkpoint
+        # "model_checkpoint": "unikei/bert-base-smiles",  # Pretrained tokenizer/model checkpoint
+        "model_checkpoint": "DeepChem/ChemBERTa-77M-MTR",  # Pretrained tokenizer/model checkpoint
         # === Execution Device ===
         "device": device_type,  # Automatically assigned device based on CUDA availability
         # === Optional Settings ===
