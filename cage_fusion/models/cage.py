@@ -161,8 +161,17 @@ class CAGEFusionModel(nn.Module):
             self.scale_aux = nn.Parameter(
                 torch.tensor(config.get("scale_aux_factor", 1.0))
             )
+            # --- Aux features MLP (ADDED) ---
+            self.aux_mlp = nn.Sequential(
+                nn.Linear(self.aux_feature_dim, self.aux_feature_dim),
+                nn.ReLU(),
+                nn.BatchNorm1d(self.aux_feature_dim),
+                nn.Linear(self.aux_feature_dim, self.aux_feature_dim),
+                nn.ReLU(),
+            )
         else:
             self.register_buffer("scale_aux", torch.tensor(0.0))
+            self.aux_mlp = None
 
         # Always use full fusion_dim regardless of config flags
         fusion_dim = self.graph_dim + self.embedding_dim + self.aux_feature_dim
@@ -321,11 +330,10 @@ class CAGEFusionModel(nn.Module):
             else torch.zeros_like(attn_output)
         )
         if aux_feats is not None:
-            aux_part = (
-                self.scale_aux * aux_feats
-                if self.use_aux_features
-                else torch.zeros_like(aux_feats)
-            )
+            if self.use_aux_features and self.aux_mlp is not None:
+                aux_part = self.scale_aux * self.aux_mlp(aux_feats)
+            else:
+                aux_part = torch.zeros_like(aux_feats)
         else:
             aux_part = torch.zeros(
                 graph_part.size(0), self.aux_feature_dim, device=graph_part.device

@@ -36,14 +36,14 @@ def get_default_config():
         "scaled_graph_factor": 1.0,  # Scaling factor for attention scores
         "scale_attn_factor": 0.1,  # Scaling factor for attention scores
         "scale_aux_factor": 0.1,  # Scaling factor for auxiliary features
-        "scaled_fg_factor": 0.5,  # Scaling factor for functional group prompts
+        "scaled_fg_factor": 1.0,  # Scaling factor for functional group prompts
         # === Fusion Layer Settings ===
         "fusion_dropout_1": 0.1,  # Dropout rate in first fusion layer
         "fusion_dropout_2": 0.1,  # Dropout rate in second
         # === Training Hyperparameters ===
         "learning_rate": 0.0005,  # Learning rate for the optimizer
         "num_epochs": 50,  # Total number of training epochs
-        "batch_size": 192,  # Number of samples per batch
+        "batch_size": 128,  # Number of samples per batch
         "warmup_fraction": 0.09,  # Warmup steps as a fraction of total steps
         # === Attention Regularization ===
         "lambda_entropy": 0.0033,  # Entropy loss weight for attention sparsity
