@@ -127,15 +127,19 @@ def evaluate_model(
             # Plot 1: Standard Graph-to-Token Attention Heatmap for the random sample
             if g2t_weights is not None:
                 plot_path_g2t = os.path.join(plot_dir, "g2t_evaluation_attention.png")
-                visualize_attention_weights(
-                    g2t_weights[random_sample_idx],
-                    attn_mask[random_sample_idx],
-                    model.num_heads,
-                    output_path=plot_path_g2t,
-                    input_ids=input_ids_batch[random_sample_idx],
-                    tokenizer_obj=tokenizer_obj,
-                    smiles=smiles_batch[random_sample_idx],
-                )
+                try:
+                    visualize_attention_weights(
+                        g2t_weights[random_sample_idx],
+                        attn_mask[random_sample_idx],
+                        model.num_heads,
+                        output_path=plot_path_g2t,
+                        input_ids=input_ids_batch[random_sample_idx],
+                        tokenizer_obj=tokenizer_obj,
+                        smiles=smiles_batch[random_sample_idx],
+                    )
+                except Exception as e:
+                    logger.warning(f"Failed to visualize attention weights: {e}")
+                    # continue to next visualization step
 
             # Plot 2: Visualize atom attention from the TOP-attended tokens
             if g2t_weights is not None and t2a_weights is not None:
@@ -180,14 +184,18 @@ def evaluate_model(
                     )
 
                     # Step 3: Make a single call to the new visualization function
-                    visualize_top_token_attentions(
-                        smiles=smiles_to_plot,
-                        attention_weights=t2a_weights[random_sample_idx],
-                        full_token_list=full_token_list_str,
-                        # top_tokens_info=top_tokens_info,
-                        top_token_indices=top_token_indices.cpu().numpy(),
-                        output_dir=plot_dir,
-                    )
+                    try:
+                        visualize_top_token_attentions(
+                            smiles=smiles_to_plot,
+                            attention_weights=t2a_weights[random_sample_idx],
+                            full_token_list=full_token_list_str,
+                            # top_tokens_info=top_tokens_info,
+                            top_token_indices=top_token_indices.cpu().numpy(),
+                            output_dir=plot_dir,
+                        )
+                    except Exception as e:
+                        logger.warning(f"Failed to visualize top token attentions: {e}")
+                        # continue to next visualization step
                     
                     # Step 4 Total attention contribution
                     attn = t2a_weights[random_sample_idx]
@@ -197,12 +205,16 @@ def evaluate_model(
                     logit_vec = logits[random_sample_idx].detach().cpu().numpy()
                     task_idx = np.argmax(np.abs(logit_vec))  # abs() finds the most extreme value, or remove abs() for just highest positive
                     pred_logit = logit_vec[task_idx]  # this will be a scalar
-                    visualize_total_atom_contribution(
-                        smiles=smiles_to_plot,
-                        t2a_weights_sample=attn,
-                        pred_logit=pred_logit,
-                        output_path=os.path.join(plot_dir, "atom_total_contrib.png")
-                    )
+                    try:
+                        visualize_total_atom_contribution(
+                            smiles=smiles_to_plot,
+                            t2a_weights_sample=attn,
+                            pred_logit=pred_logit,
+                            output_path=os.path.join(plot_dir, "atom_total_contrib.png")
+                        )
+                    except Exception as e:
+                        logger.warning(f"Failed to visualize total atom contribution: {e}")
+                        # continue to next visualization step
                 else:
                     logger.warning(
                         "SMILES for the chosen random sample is empty. Skipping T2A visualization."
@@ -210,26 +222,33 @@ def evaluate_model(
             # Plot 3: Visualize functional group attention
             if prompt_attn_weights and prompt_attn_weights[random_sample_idx]:
                 plot_path_fg = os.path.join(plot_dir, "fg_prompt_attention.png")
-                visualize_fg_attention(
-                    smiles=smiles_batch[random_sample_idx],
-                    prompt_attn_weights=prompt_attn_weights[random_sample_idx],
-                    output_path=plot_path_fg,
-                    title=f"Functional Group Attention (PROMPT)",
-                )
+                try:
+                    visualize_fg_attention(
+                        smiles=smiles_batch[random_sample_idx],
+                        prompt_attn_weights=prompt_attn_weights[random_sample_idx],
+                        output_path=plot_path_fg,
+                        title=f"Functional Group Attention (PROMPT)",
+                    )
+                except Exception as e:
+                    logger.warning(f"Failed to visualize functional group attention: {e}")
+                    # continue to next visualization step
                 
                 weight_fg = float(model.alpha.detach().cpu().item())
                 weight_t2a = float(model.scale_graph.detach().cpu().item())
 
-                visualize_combined_atom_contribution(
-                    smiles=smiles_to_plot,
-                    t2a_weights_sample=attn,
-                    pred_logit=pred_logit,
-                    prompt_attn_weights=prompt_attn_weights[random_sample_idx],
-                    output_path=os.path.join(plot_dir, "atom_combined_contrib.png"),
-                    weight_t2a=weight_t2a,
-                    weight_fg=weight_fg,
-
-                )
+                try:
+                    visualize_combined_atom_contribution(
+                        smiles=smiles_to_plot,
+                        t2a_weights_sample=attn,
+                        pred_logit=pred_logit,
+                        prompt_attn_weights=prompt_attn_weights[random_sample_idx],
+                        output_path=os.path.join(plot_dir, "atom_combined_contrib.png"),
+                        weight_t2a=weight_t2a,
+                        weight_fg=weight_fg,
+                    )
+                except Exception as e:
+                    logger.warning(f"Failed to visualize combined atom contribution: {e}")
+                    # continue to next visualization step
 
         loss = criterion(logits, labels)
         total_loss += loss.item()

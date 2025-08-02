@@ -204,6 +204,8 @@ def _prepare_plot_data_coeff(mol, attention_coeffs, top_atom_indices, attention_
     max_abs_coeff = (
         np.max(np.abs(attention_coeffs)) if attention_coeffs.size > 0 else 1.0
     )
+    if max_abs_coeff < 1e-8:
+        max_abs_coeff = 1.0
     norm = mcolors.Normalize(vmin=-max_abs_coeff, vmax=max_abs_coeff)
 
     # Color only the most influential atoms for clarity

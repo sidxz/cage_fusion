@@ -205,6 +205,9 @@ def _prepare_plot_data_coeff(mol, attention_coeffs, top_atom_indices, attention_
     max_abs_coeff = (
         np.max(np.abs(attention_coeffs)) if attention_coeffs.size > 0 else 1.0
     )
+    if max_abs_coeff < 1e-8:
+        max_abs_coeff = 1.0
+        
     norm = mcolors.Normalize(vmin=-max_abs_coeff, vmax=max_abs_coeff)
 
     # Color only the most influential atoms for clarity
@@ -445,17 +448,19 @@ from rdkit import Chem
 from rdkit.Chem.Draw import rdMolDraw2D
 import matplotlib.cm as cm
 
+
 def minmax_neg1_1(x):
     x = np.asarray(x)
     minv, maxv = x.min(), x.max()
     return 2 * (x - minv) / (maxv - minv + 1e-8) - 1
 
+
 def visualize_total_atom_contribution(
     smiles,
     t2a_weights_sample,  # shape: [n_tokens, n_atoms] (numpy, or torch.cpu().numpy())
-    pred_logit,          # model output scalar, for sign
+    pred_logit,  # model output scalar, for sign
     output_path="atom_total_contrib.png",
-    top_n=None,             # If None, show all; else, show top N pos and N neg atoms
+    top_n=None,  # If None, show all; else, show top N pos and N neg atoms
 ):
     """
     Visualize total per-atom contributions by summing over all tokens.
@@ -494,8 +499,10 @@ def visualize_total_atom_contribution(
     # Select top_n positive and top_n negative atoms if requested
     if top_n is not None and top_n > 0:
         pos_atoms = np.argsort(-atom_contribs)[:n_top]  # N most positive
-        neg_atoms = np.argsort(atom_contribs)[:n_top]   # N most negative
-        highlight_atoms = list(set(int(i) for i in np.concatenate([pos_atoms, neg_atoms])))
+        neg_atoms = np.argsort(atom_contribs)[:n_top]  # N most negative
+        highlight_atoms = list(
+            set(int(i) for i in np.concatenate([pos_atoms, neg_atoms]))
+        )
     else:
         highlight_atoms = list(range(n_atoms))
 
@@ -509,7 +516,8 @@ def visualize_total_atom_contribution(
     highlight_bonds = [
         int(b.GetIdx())
         for b in mol.GetBonds()
-        if int(b.GetBeginAtomIdx()) in highlight_atoms and int(b.GetEndAtomIdx()) in highlight_atoms
+        if int(b.GetBeginAtomIdx()) in highlight_atoms
+        and int(b.GetEndAtomIdx()) in highlight_atoms
     ]
     bond_colors = {}
     for bond_idx in highlight_bonds:
@@ -539,17 +547,17 @@ def visualize_total_atom_contribution(
     os.makedirs(os.path.dirname(output_path), exist_ok=True)
     with open(output_path, "wb") as f:
         f.write(drawer.GetDrawingText())
-        
-        
+
+
 def visualize_combined_atom_contribution(
     smiles,
-    t2a_weights_sample,      # [n_tokens, n_atoms_padded] (numpy or torch)
-    pred_logit,              # scalar (float)
-    prompt_attn_weights,     # dict as in visualize_fg_attention
+    t2a_weights_sample,  # [n_tokens, n_atoms_padded] (numpy or torch)
+    pred_logit,  # scalar (float)
+    prompt_attn_weights,  # dict as in visualize_fg_attention
     output_path="atom_combined_contrib.png",
     weight_t2a=1.0,
     weight_fg=1.0,
-    top_n=None,              # highlight top N positive/negative if wanted
+    top_n=None,  # highlight top N positive/negative if wanted
 ):
     print(f"weight_t2a: {weight_t2a}, weight_fg: {weight_fg}")
     # print("="*10, "ENTER visualize_combined_atom_contribution", "="*10)
@@ -564,14 +572,14 @@ def visualize_combined_atom_contribution(
         return
 
     n_atoms = mol.GetNumAtoms()
-    #print(f"Num atoms in molecule: {n_atoms}")
+    # print(f"Num atoms in molecule: {n_atoms}")
 
     # --- 1. Model contribution: as before ---
     if hasattr(t2a_weights_sample, "cpu"):
         attn = t2a_weights_sample.cpu().numpy()
     else:
         attn = t2a_weights_sample
-    #print(f"attn.shape after cpu().numpy(): {attn.shape}")
+    # print(f"attn.shape after cpu().numpy(): {attn.shape}")
     # if attn.shape[-1] != n_atoms:
     #     print(f"WARNING: attn.shape[-1] = {attn.shape[-1]} does not match n_atoms = {n_atoms}")
     #     print(f"Trimming model_atom_scores from {attn.shape[-1]} to {n_atoms}")
@@ -582,18 +590,18 @@ def visualize_combined_atom_contribution(
 
     # PATCH: trim to only real atoms
     model_atom_contribs = model_atom_contribs[:n_atoms]
-    #print(f"model_atom_contribs.shape after trim: {model_atom_contribs.shape}")
+    # print(f"model_atom_contribs.shape after trim: {model_atom_contribs.shape}")
 
     # --- 2. FG prompt per-atom contribution ---
     fg_atom_contribs = np.zeros(n_atoms)
     fg_ids = prompt_attn_weights.get("fg_ids", [])
     weights = np.array(prompt_attn_weights.get("weights", []))
-    #print(f"FG ids: {fg_ids}")
-    #print(f"FG weights: {weights}")
+    # print(f"FG ids: {fg_ids}")
+    # print(f"FG weights: {weights}")
     if len(fg_ids) > 0 and len(weights) > 0:
         average_attention = np.mean(weights)
         attention_coefficients = weights - average_attention
-        #print(f"FG attention coefficients: {attention_coefficients}")
+        # print(f"FG attention coefficients: {attention_coefficients}")
         for fg_idx, fg_id in enumerate(fg_ids):
             coeff = attention_coefficients[fg_idx]
             fg_name = FG_NAMES[fg_id] if fg_id < len(FG_NAMES) else f"FG_{fg_id}"
@@ -607,18 +615,20 @@ def visualize_combined_atom_contribution(
             if not patt:
                 continue
             matches = mol.GetSubstructMatches(patt)
-            #print(f"  FG {fg_name} (id {fg_id}), SMARTS: {smarts}, coeff: {coeff}, matches: {matches}")
+            # print(f"  FG {fg_name} (id {fg_id}), SMARTS: {smarts}, coeff: {coeff}, matches: {matches}")
             for match in matches:
                 for atom_idx in match:
                     if atom_idx < n_atoms:
                         fg_atom_contribs[atom_idx] += coeff / len(match)
-                        #print(f"    Atom {atom_idx}: FG contrib += {coeff / len(match)}")
-    #print(f"Final model_atom_contribs.shape: {model_atom_contribs.shape}")
-    #print(f"Final fg_atom_contribs.shape: {fg_atom_contribs.shape}")
+                        # print(f"    Atom {atom_idx}: FG contrib += {coeff / len(match)}")
+    # print(f"Final model_atom_contribs.shape: {model_atom_contribs.shape}")
+    # print(f"Final fg_atom_contribs.shape: {fg_atom_contribs.shape}")
 
     # --- Defensive check after population ---
     if model_atom_contribs.shape != fg_atom_contribs.shape:
-        print(f"Shape mismatch! Model: {model_atom_contribs.shape}, FG: {fg_atom_contribs.shape}")
+        print(
+            f"Shape mismatch! Model: {model_atom_contribs.shape}, FG: {fg_atom_contribs.shape}"
+        )
         print(f"SMILES: {smiles}")
         print(f"fg_ids: {fg_ids}")
         print(f"weights: {weights}")
@@ -630,7 +640,9 @@ def visualize_combined_atom_contribution(
     model_atom_contribs_norm = minmax_neg1_1(model_atom_contribs)
     fg_atom_contribs_norm = minmax_neg1_1(fg_atom_contribs)
 
-    total_atom_contribs = weight_t2a * model_atom_contribs_norm + weight_fg * fg_atom_contribs_norm
+    total_atom_contribs = (
+        weight_t2a * model_atom_contribs_norm + weight_fg * fg_atom_contribs_norm
+    )
     vmax = np.abs(total_atom_contribs).max() if n_atoms > 0 else 1.0
     norm = total_atom_contribs / (vmax + 1e-8)
     cmap = cm.get_cmap("bwr")
@@ -639,7 +651,9 @@ def visualize_combined_atom_contribution(
     if top_n is not None and top_n > 0:
         pos_atoms = np.argsort(-total_atom_contribs)[:top_n]
         neg_atoms = np.argsort(total_atom_contribs)[:top_n]
-        highlight_atoms = list(set(int(i) for i in np.concatenate([pos_atoms, neg_atoms])))
+        highlight_atoms = list(
+            set(int(i) for i in np.concatenate([pos_atoms, neg_atoms]))
+        )
     else:
         highlight_atoms = list(range(n_atoms))
 
@@ -653,7 +667,8 @@ def visualize_combined_atom_contribution(
     highlight_bonds = [
         int(b.GetIdx())
         for b in mol.GetBonds()
-        if int(b.GetBeginAtomIdx()) in highlight_atoms and int(b.GetEndAtomIdx()) in highlight_atoms
+        if int(b.GetBeginAtomIdx()) in highlight_atoms
+        and int(b.GetEndAtomIdx()) in highlight_atoms
     ]
     bond_colors = {}
     for bond_idx in highlight_bonds:

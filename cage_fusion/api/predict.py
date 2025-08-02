@@ -58,6 +58,7 @@ def predict_smiles(
     temp_dir: Optional[str] = None,
     plot_all_attention: bool = False,
     attn_plot_dir: Optional[str] = None,
+    model_file_name: Optional[str] = "best_model.pt",
 ) -> pd.DataFrame:
     """
     Core API function to run inference on a DataFrame containing SMILES strings.
@@ -73,32 +74,39 @@ def predict_smiles(
         )
 
     # === 1. Load config and checkpoint ===
-    best_model_path = os.path.join(checkpoint_dir, "best_model.pt")
+    best_model_path = os.path.join(checkpoint_dir, model_file_name)
     scaler_path = os.path.join(checkpoint_dir, "aux_features_scaler.pkl")
 
     if not os.path.exists(best_model_path) or not os.path.exists(scaler_path):
         raise FileNotFoundError(
-            f"Missing 'best_model.pt' or 'aux_features_scaler.pkl' in {checkpoint_dir}"
+            f"Missing '{model_file_name}' or 'aux_features_scaler.pkl' in {checkpoint_dir}"
         )
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     logger.info(f"Using device: {device}")
 
     checkpoint = torch.load(best_model_path, map_location=device, weights_only=False)
+    # Print checkpoint keys for debugging
+    logger.info(f"Checkpoint keys: {list(checkpoint.keys())}")
+    # Print config values for debugging
+    logger.info(f"Checkpoint config: {checkpoint.get('config', {})}")
     config = checkpoint["config"]
     tasks = config["tasks"]
     best_thresholds = checkpoint.get("best_thresholds", np.full(len(tasks), 0.5))
     logger.info(f"Loaded model for tasks: {tasks} with thresholds: {best_thresholds}")
 
     # === 2. Load model and components ===
+    logger.info("Loading model and components...")
     model = CAGEFusionModel(config).to(device)
     model.load_state_dict(checkpoint["model_state_dict"])
     model.eval()
     tokenizer = AutoTokenizer.from_pretrained(config["model_checkpoint"])
+    logger.info(f"Using tokenizer: {config['model_checkpoint']}")
     embedding_model = (
         AutoModel.from_pretrained(config["model_checkpoint"]).to(device).eval()
     )
     scaler = joblib.load(scaler_path)
+    logger.info(f"Loaded scaler from {scaler_path}")
 
     # --- FIXED: Added a strict check for a valid, fitted scaler ---
     if scaler is None or not hasattr(scaler, "mean_"):
@@ -111,6 +119,7 @@ def predict_smiles(
     logger.info("Model and necessary components loaded successfully.")
 
     # === 3. Featurize the input SMILES ===
+    logger.info("Featurizing input SMILES...")
     df = input_df.copy().reset_index().rename(columns={"index": "original_index"})
     dummy_labels = [tasks[0]] if tasks else ["Label"]
 
@@ -139,6 +148,7 @@ def predict_smiles(
         collate_fn=collate_fn_for_cage_fusion,
         shuffle=False,
     )
+    logger.info(f"DataLoader created with batch size {batch_size}.")
 
     # === 4. Predict ===
     logger.info("Running model predictions...")

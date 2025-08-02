@@ -8,6 +8,7 @@ from cage_fusion.engine.fg_utils import FG_NAMES
 from rich.console import Console
 from rich.traceback import install
 import shutil
+
 install()
 console = Console()
 
@@ -25,8 +26,8 @@ def freeze_aux_and_output(model):
     logger.info("🔒 [PHASE 1] Freezing AUX/Fusion/Output layers.")
     logger.info(f"Trainable layers:\n  - " + "\n  - ".join(trainable))
     logger.info(f"Frozen layers:\n  - " + "\n  - ".join(frozen))
-    
-    
+
+
 def freeze_aux_and_fusion(model):
     """Freeze aux layers, fusion MLP; unfreeze rest. PHASE 1 Alternative"""
     frozen, trainable = [], []
@@ -281,6 +282,7 @@ def staged_finetune(
     tokenizer_obj,
     pos_weight,
     scheduler_fn,
+    num_epochs_warmup,
     num_epochs_phase1,
     num_epochs_aux_warmup,
     num_epochs_phase2,
@@ -289,11 +291,41 @@ def staged_finetune(
     unfreeze_fn=unfreeze_all,
 ):
     """
+    RRun 3 rounds of warmup with everything trainable
+    """
+    """
     Three-phase fine-tuning:
     1. Phase 1: Train core (aux/fusion/output frozen) or Alternative Phase 1 (aux/fusion/ frozen, output unfrozen)
     2. Phase 2a: AUX-only warmup (core frozen)
     3. Phase 2b: Train all (full unfreeze)
     """
+
+    # Warmup with everything trainable
+    # -- Phase 0: Warmup --
+    logger.info("🔄 Warming up")
+    config["num_epochs"] = num_epochs_warmup
+    optimizer = rebuild_optimizer(model, config)
+    scheduler = scheduler_fn(optimizer, phase="warmup")
+    criterion = torch.nn.BCEWithLogitsLoss(pos_weight=pos_weight)
+    Console().rule("[bold yellow]Phase WARMUP: Training with all layers trainable")
+    train_model(
+        model,
+        train_loader,
+        val_loader,
+        optimizer,
+        criterion,
+        scheduler,
+        device,
+        config,
+        label_names,
+        tokenizer_obj,
+    )
+
+    warmup_ckpt = os.path.join(config["checkpoints_dir"], "checkpoint_phase1.pt")
+    latest_ckpt = os.path.join(config["checkpoints_dir"], "latest_checkpoint.pt")
+    shutil.copyfile(latest_ckpt, warmup_ckpt)
+    logger.info(f"[WARMUP] Saved checkpoint to {warmup_ckpt}")
+
     # ---- Phase 1 ----
     freeze_fn(model)
     config["num_epochs"] = num_epochs_phase1
@@ -313,7 +345,7 @@ def staged_finetune(
         label_names,
         tokenizer_obj,
     )
-    
+
     phase1_ckpt = os.path.join(config["checkpoints_dir"], "checkpoint_phase1.pt")
     latest_ckpt = os.path.join(config["checkpoints_dir"], "latest_checkpoint.pt")
     shutil.copyfile(latest_ckpt, phase1_ckpt)

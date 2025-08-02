@@ -39,8 +39,8 @@ def get_default_config():
         "scale_aux_factor": 0.05,  # Scaling factor for auxiliary features
         "scaled_fg_factor": 1.0,  # Scaling factor for functional group prompts
         # === Fusion Layer Settings ===
-        "fusion_dropout_1": 0.1,  # Dropout rate in first fusion layer
-        "fusion_dropout_2": 0.1,  # Dropout rate in second
+        "fusion_dropout_1": 0.05,  # Dropout rate in first fusion layer
+        "fusion_dropout_2": 0.05,  # Dropout rate in second
         # === Training Hyperparameters ===
         "learning_rate": 0.0005,  # Learning rate for the optimizer
         "num_epochs": 50,  # Total number of training epochs

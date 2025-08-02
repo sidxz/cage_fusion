@@ -27,21 +27,23 @@ FEATURES_ROOT = os.path.join(DATA_ROOT, "features")
 CHECKPOINTS_ROOT = "checkpoints"
 OUTPUT_ROOT = "output"
 DEFAULT_DATASET = "bace_classification"
+DEFAULT_SEED = 54
 DEFAULT_FORCE_RERUN = False
 DEFAULT_RERUN_TRAIN = False
 DEFAULT_SPLITTER = "scaffold"
-
-DEFAULT_SEED = 54
-DEFAULT_BATCH_SIZE = 32
-
-DEFAULT_NUM_EPOCHS = 30
-DEFAULT_LR = 5e-4
-USE_PRETRAINED_WEIGHTS = False  # Whether to use pretrained weights
-
-
+DEFAULT_BATCH_SIZE = 128
+DEFAULT_LR = 1e-4
 MODEL_BEST = "best_model.pt"
 MODEL_LATEST = "latest_checkpoint.pt"
 MIN_TOKEN_FREQ = 10
+USE_PRETRAINED_WEIGHTS = False  # Whether to use pretrained weights
+
+
+
+DEFAULT_NUM_EPOCHS_WARMUP = 3  # Phase 0: aux-only warmup
+DEFAULT_NUM_EPOCHS_PHASE1 = 18  # Phase 1: core model only
+DEFAULT_NUM_EPOCHS_AUX_WARMUP = 20  # Phase 2: aux-only warmup
+DEFAULT_NUM_EPOCHS_PHASE2 = 30  # Phase 3: full model (fine-tune all)
 
 # ======== Project Path Setup ========
 project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
@@ -59,14 +61,13 @@ from rich.traceback import install
 from cage_fusion.configs import get_default_config
 from cage_fusion.featurizers import featurize_and_save_streaming
 from cage_fusion.models import CAGEFusionModel
-from cage_fusion.engine.training import train_model
+from cage_fusion.engine.training import train_model, staged_finetune
 from cage_fusion.engine.evaluation import evaluate_model
 from cage_fusion.engine.dataset import CageFusionStreamingDataset
 from cage_fusion.engine.data_utils import collate_fn_for_cage_fusion
 from cage_fusion.engine.utils import compute_pos_weight_from_h5
 from cage_fusion.utils.logging_utils import logger
 from cage_fusion.utils.model_utils import load_partial_weights
-
 
 # ======== Console Setup ========
 install()
@@ -305,7 +306,6 @@ def run_benchmark(dataset_name, seed, force_rerun, rerun_train, splitter):
     config["tasks"] = tasks
 
     config["batch_size"] = DEFAULT_BATCH_SIZE
-    config["num_epochs"] = DEFAULT_NUM_EPOCHS
     config["learning_rate"] = DEFAULT_LR
 
     console.rule("[bold yellow]Featurization and Setup")
@@ -386,31 +386,42 @@ def run_benchmark(dataset_name, seed, force_rerun, rerun_train, splitter):
         pretrain_weights_path = os.path.join(CHECKPOINTS_ROOT, "pretrained", "pretrained_model.pt")
         logger.info(f"\033[1;34mLoading pretrained weights from {pretrain_weights_path}\033[0m")
         load_partial_weights(model, pretrain_weights_path)
-    
+        
     optimizer = torch.optim.Adam(model.parameters(), lr=config["learning_rate"])
     pos_weight = compute_pos_weight_from_h5(h5_path=h5_paths["train"]).to(device)
     criterion = torch.nn.BCEWithLogitsLoss(pos_weight=pos_weight)
 
-    scheduler = get_cosine_schedule_with_warmup(
-        optimizer,
-        num_warmup_steps=int(
-            len(train_loader) * config["num_epochs"] * config["warmup_fraction"]
-        ),
-        num_training_steps=len(train_loader) * config["num_epochs"],
-    )
+    def scheduler_fn(optimizer, phase):
+        """Return a scheduler with correct warmup for each phase."""
+        if phase == "warmup":
+            num_epochs = DEFAULT_NUM_EPOCHS_WARMUP
+        elif phase == 1:
+            num_epochs = DEFAULT_NUM_EPOCHS_PHASE1
+        elif phase == "aux":
+            num_epochs = DEFAULT_NUM_EPOCHS_AUX_WARMUP
+        else:
+            num_epochs = DEFAULT_NUM_EPOCHS_PHASE2
+        return get_cosine_schedule_with_warmup(
+            optimizer,
+            num_warmup_steps=int(len(train_loader) * 0.1 * num_epochs),
+            num_training_steps=len(train_loader) * num_epochs,
+        )
 
     console.rule("[bold yellow]Starting Training")
-    train_model(
-        model,
-        train_loader,
-        val_loader,
-        optimizer,
-        criterion,
-        scheduler,
-        device,
-        config,
-        tasks,
-        tokenizer,
+    staged_finetune(
+        model=model,
+        train_loader=train_loader,
+        val_loader=val_loader,
+        device=device,
+        config=config,
+        label_names=tasks,
+        tokenizer_obj=tokenizer,
+        pos_weight=pos_weight,
+        scheduler_fn=scheduler_fn,
+        num_epochs_warmup=DEFAULT_NUM_EPOCHS_WARMUP,
+        num_epochs_phase1=DEFAULT_NUM_EPOCHS_PHASE1,
+        num_epochs_aux_warmup=DEFAULT_NUM_EPOCHS_AUX_WARMUP,
+        num_epochs_phase2=DEFAULT_NUM_EPOCHS_PHASE2,
     )
 
     best_model_path = os.path.join(config["checkpoints_dir"], MODEL_BEST)
