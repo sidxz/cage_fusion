@@ -51,7 +51,7 @@ def featurize_batch(tokenizer, model, smiles_batch, seq_len, device, vocab_size)
     Returns:
         Tuple[np.ndarray, np.ndarray]: Token IDs and embedding tensors (on CPU).
     """
-    #logger.info(f"Featurizing {len(smiles_batch)} SMILES strings...")
+    # logger.info(f"Featurizing {len(smiles_batch)} SMILES strings...")
     inputs = tokenizer(
         smiles_batch,
         return_tensors="pt",
@@ -71,7 +71,7 @@ def featurize_batch(tokenizer, model, smiles_batch, seq_len, device, vocab_size)
 
     if torch.isnan(embeddings).any() or torch.isinf(embeddings).any():
         raise ValueError("Embeddings contain NaN or Inf.")
-    #logger.info("Featurization complete.")
+    # logger.info("Featurization complete.")
     return input_ids.cpu().numpy(), embeddings.cpu().numpy()
 
 
@@ -105,11 +105,11 @@ def process_auxiliary_features(
     Returns:
         List: Updated graph_feats list.
     """
-    #logger.info(f"Processing auxiliary features batch of size {len(batch_df)}")
+    # logger.info(f"Processing auxiliary features batch of size {len(batch_df)}")
     batch_aux = []
     for j, row in batch_df.iterrows():
         idx = i_offset + (j - batch_df.index[0])
-        #h5_file["original_indices"][idx] = row["original_index"]
+        # h5_file["original_indices"][idx] = row["original_index"]
         mol = row["mol"]
         graph_feats.append(graph_featurizer(mol))
 
@@ -134,7 +134,7 @@ def process_auxiliary_features(
 
     if fit_scaler and batch_aux:
         scaler.partial_fit(np.array(batch_aux))
-    #logger.info("Auxiliary features processed.")
+    # logger.info("Auxiliary features processed.")
     return graph_feats
 
 
@@ -180,5 +180,8 @@ def normalize_auxiliary_features(
             f["auxiliary_features_normalized"][i : i + batch_size] = scaler.transform(
                 batch
             )
+
+        del f["auxiliary_features"]
+        logger.info(f"Removed original 'auxiliary_features' dataset to conserve space.")
 
         logger.info(f"Auxiliary features normalization complete for '{name}'")

@@ -39,7 +39,7 @@ from cage_fusion.viz.token_viz import (
     visualize_top_token_attentions,
     visualize_attention_weights,
     visualize_total_atom_contribution,
-    visualize_combined_atom_contribution
+    visualize_combined_atom_contribution,
 )
 
 
@@ -54,7 +54,7 @@ console = Console()
 def predict_smiles(
     input_df: pd.DataFrame,
     checkpoint_dir: str,
-    batch_size: int = 200,
+    batch_size: int = 256,
     temp_dir: Optional[str] = None,
     plot_all_attention: bool = False,
     attn_plot_dir: Optional[str] = None,
@@ -262,16 +262,18 @@ def predict_smiles(
                             attn = attn.mean(axis=0)
                         # Get logit or predicted value for this sample
                         logit_vec = logits[j].detach().cpu().numpy()
-                        task_idx = np.argmax(np.abs(logit_vec))  # abs() finds the most extreme value, or remove abs() for just highest positive
+                        task_idx = np.argmax(
+                            np.abs(logit_vec)
+                        )  # abs() finds the most extreme value, or remove abs() for just highest positive
                         pred_logit = logit_vec[task_idx]  # this will be a scalar
                         visualize_total_atom_contribution(
                             smiles=smiles_to_plot,
                             t2a_weights_sample=attn,
                             pred_logit=pred_logit,
-                            output_path=os.path.join(sample_plot_dir, "atom_total_contrib.png")
+                            output_path=os.path.join(
+                                sample_plot_dir, "atom_total_contrib.png"
+                            ),
                         )
-
-                        
 
                     if prompt_attn_weights and prompt_attn_weights[j]:
                         plot_path_fg = os.path.join(
@@ -283,8 +285,7 @@ def predict_smiles(
                             output_path=plot_path_fg,
                             title=f"Functional Group Attention (PROMPT)",
                         )
-                        
-                        
+
                         weight_fg = float(model.alpha.detach().cpu().item())
                         weight_t2a = float(model.scale_graph.detach().cpu().item())
 
@@ -293,38 +294,47 @@ def predict_smiles(
                             t2a_weights_sample=attn,
                             pred_logit=pred_logit,
                             prompt_attn_weights=prompt_attn_weights[j],
-                            output_path=os.path.join(sample_plot_dir, "atom_combined_contrib.png"),
+                            output_path=os.path.join(
+                                sample_plot_dir, "atom_combined_contrib.png"
+                            ),
                             weight_t2a=weight_t2a,
                             weight_fg=weight_fg,
-
                         )
 
             sample_idx_offset += len(smiles_batch)
 
     # === 5. Format Output ===
 
-    output_df = input_df.copy()
+    output_df = df.copy()  # <- This df already includes 'original_index'
     if all_preds:
         all_preds_np = np.concatenate(all_preds, axis=0)
         with h5py.File(h5_path, "r") as f:
-            valid_indices = f["original_indices"][:]
-            results_df = pd.DataFrame(index=valid_indices)
-            for idx, task in enumerate(tasks):
-                results_df[f"pred_score_{task}"] = all_preds_np[:, idx]
-                results_df[f"pred_label_{task}"] = (
-                    all_preds_np[:, idx] > best_thresholds[idx]
-                ).astype(int)
-            output_df = output_df.merge(
-                results_df, left_index=True, right_index=True, how="left"
+            valid_indices = f["original_indices"][:]  # These are safe to match by
+
+        # Step 1: Create results DataFrame with predictions and original indices
+        results_df = pd.DataFrame({"original_index": valid_indices})
+        for idx, task in enumerate(tasks):
+            results_df[f"pred_score_{task}"] = all_preds_np[:, idx]
+            results_df[f"pred_label_{task}"] = (
+                all_preds_np[:, idx] > best_thresholds[idx]
+            ).astype(int)
+
+        # Step 2: Merge by original_index instead of relying on index alignment
+        output_df = output_df.merge(results_df, on="original_index", how="left")
+
+        # Step 3: Merge attention tokens (if available)
+        if top_tokens_per_original_index:
+            token_df = pd.DataFrame(
+                top_tokens_per_original_index,
+                columns=["original_index", "top_attention_tokens"],
             )
-        token_df = pd.DataFrame(
-            top_tokens_per_original_index,
-            columns=["original_index", "top_attention_tokens"],
-        )
-        output_df = output_df.merge(
-            token_df, left_index=True, right_on="original_index", how="left"
-        )
-        output_df.drop(columns=["original_index"], inplace=True)
+            output_df = output_df.merge(token_df, on="original_index", how="left")
+
+        # Optional: restore original ordering (if needed)
+        output_df.sort_values("original_index", inplace=True)
+
+        # Final cleanup
+        output_df.drop(columns=["original_index", "mol"], errors="ignore", inplace=True)
 
     # === 6. Clean up ===
     try:
@@ -372,6 +382,12 @@ def main():
         default="./attention_plots_prediction",
         help="Directory to save all attention plots.",
     )
+
+    parser.add_argument(
+        "--model-file-name",
+        default="best_model.pt",
+        help="Name of the model file to load from the checkpoint directory.",
+    )
     args = parser.parse_args()
 
     try:
@@ -384,6 +400,7 @@ def main():
             temp_dir=args.temp_dir,
             plot_all_attention=args.plot_all_attention,
             attn_plot_dir=args.attn_plot_dir,
+            model_file_name=args.model_file_name,
         )
 
         predictions_df.to_csv(args.output, index=False)
