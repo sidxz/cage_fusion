@@ -172,20 +172,26 @@ def predict_smiles(
         # generator=g,
         **common_loader_kwargs,
     )
+    
+    
 
     print(f"Loaded {len(loader)} batches for inference.")
 
     all_preds = []
     all_original_indices = []
     all_top_attention_tokens = []
+    
+    predictions_df = pd.DataFrame()
 
     if plot_all_attention and attn_plot_dir:
         os.makedirs(attn_plot_dir, exist_ok=True)
         logger.info(f"Attention plots will be saved to: {attn_plot_dir}")
 
     with torch.no_grad():
+        batch_predictions_df = []
         for batch in tqdm(loader, desc="Predicting"):
             if batch is None:
+                logger.warning("XXXXXXXXXXXX Received an empty batch, skipping.")
                 continue
 
             (
@@ -199,6 +205,19 @@ def predict_smiles(
                 original_indices_batch,
                 ids_list,
             ) = batch
+            
+            print(f"Batch BMG: {bmg}")
+            print(f"Batch token embeddings shape: {token_embs.shape}")
+            print(f"Batch attention mask shape: {attn_mask.shape}")
+            # print attn mask of first sample
+            # print(f"Batch attention mask: {attn_mask[0]}")
+            print(f"Batch auxiliary features shape: {aux_feats.shape}")
+
+            print(f"Batch labels shape: {labels}")
+            print(f"Batch input IDs shape: {input_ids.shape}")
+            print(f"Batch SMILES: {smiles_batch}")
+            print(f"Batch original indices: {original_indices_batch}")
+            print(f"Batch IDs: {ids_list}")
 
             bmg = move_bmg_to_device(bmg, device)
             token_embs, attn_mask, aux_feats, input_ids = [
@@ -218,8 +237,39 @@ def predict_smiles(
             logits, _, _, g2t_weights, t2a_weights, _, _, _, prompt_attn_weights = (
                 model_output
             )
+            print(f"Logits shape: {logits.shape}")
+            # check if batch length and logits length match
+            if logits.shape[0] != len(smiles_batch):
+                raise ValueError(
+                    f"Logits shape {logits.shape} does not match batch size {len(smiles_batch)}"
+                )
+            
+            probabilities = torch.sigmoid(logits).cpu().numpy()
+
+            # Build batch predictions DataFrame efficiently
+            batch_predictions_df = pd.DataFrame({
+                "Original Index": original_indices_batch.cpu().numpy(),
+                "Id": ids_list,
+                "SMILES": smiles_batch,
+            })
+            for idx, task in enumerate(tasks):
+                batch_predictions_df[f"pred_class_{task}"] = (probabilities[:, idx] > best_thresholds[idx]).astype(int)
+                batch_predictions_df[task] = probabilities[:, idx]
+            ordered_cols = ["Original Index", "Id", "SMILES"] + [f"pred_class_{task}" for task in tasks] + list(tasks)
+            batch_predictions_df = batch_predictions_df[ordered_cols]
+            predictions_df = pd.concat([predictions_df, batch_predictions_df], ignore_index=True)
+            
+            
 
             all_preds.append(torch.sigmoid(logits).cpu().numpy())
+            #print the shape of all_preds
+            print(f"All predictions shape: {np.array(all_preds).shape}")
+            # print the first prediction
+            print(f"First prediction: {all_preds[0][0]}")
+            # print(f"Second prediction: {all_preds[0][1]}")
+            # print(f"Third prediction: {all_preds[0][2]}")
+            # print(f"Fourth prediction: {all_preds[0][3]}")
+            # print(f"Fifth prediction: {all_preds[0][4]}")
             all_original_indices.append(original_indices_batch.cpu().numpy())
 
             if plot_all_attention and attn_plot_dir:
@@ -319,24 +369,6 @@ def predict_smiles(
             else:
                 all_top_attention_tokens.extend([None] * len(original_indices_batch))
 
-    final_df = input_df.copy()
-    if all_preds:
-        all_preds_np = np.concatenate(all_preds, axis=0)
-        all_original_indices_np = np.concatenate(all_original_indices, axis=0)
-
-        results_df = pd.DataFrame({"original_index": all_original_indices_np})
-        for idx, task in enumerate(tasks):
-            results_df[f"pred_score_{task}"] = all_preds_np[:, idx]
-            results_df[f"pred_label_{task}"] = (
-                all_preds_np[:, idx] > best_thresholds[idx]
-            ).astype(int)
-
-        results_df["top_attention_tokens"] = all_top_attention_tokens
-
-        final_df = input_df.reset_index().rename(columns={"index": "original_index"})
-        final_df = final_df.merge(results_df, on="original_index", how="left")
-        final_df.drop(columns=["original_index"], inplace=True)
-
     try:
         if temp_dir is None:
             shutil.rmtree(temp_features_dir)
@@ -344,7 +376,7 @@ def predict_smiles(
     except Exception as e:
         logger.warning(f"Could not remove temp features dir: {e}")
 
-    return final_df
+    return predictions_df
 
 
 def main():
