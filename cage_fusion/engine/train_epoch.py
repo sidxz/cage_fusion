@@ -69,24 +69,29 @@ def train_one_epoch(
         if batch is None:
             logger.warning(f"Batch {batch_idx} is None. Skipping.")
             continue
-
-        # --- FIXED: Unpack the 7-item batch, including SMILES ---
-        # The collate_fn now returns a 7-element tuple. The SMILES list is the last
-        # element. We unpack it into `_` as it is not used in the training loop.
-        bmg, token_embs, attn_mask, aux_feats, labels, input_ids, smiles_batch = batch
-        # -----------------------------------------------------------
+        (
+            bmg,
+            token_embs,
+            attn_mask,
+            aux_feats,
+            labels,
+            input_ids,
+            smiles_batch,
+            original_indices_batch,
+            ids_list,
+        ) = batch
 
         # Move tensors to device
         bmg = move_bmg_to_device(bmg, device)
-        token_embs = token_embs.to(device)
-        attn_mask = attn_mask.to(device)
-        aux_feats = aux_feats.to(device)
-        labels = labels.to(device)
-        input_ids = input_ids.to(device)
+        token_embs = token_embs.to(device, non_blocking=True)
+        attn_mask = attn_mask.to(device, non_blocking=True)
+        aux_feats = aux_feats.to(device, non_blocking=True)
+        labels = labels.to(device, non_blocking=True)
+        input_ids = input_ids.to(device, non_blocking=True)
 
-        optimizer.zero_grad()
+        optimizer.zero_grad(set_to_none=True)
 
-        # Always request attention weights, as they are used for regularization losses
+        # Forward (no AMP)
         output = model(
             bmg=bmg,
             sequence_embeddings=token_embs,
@@ -96,11 +101,9 @@ def train_one_epoch(
             smiles_batch=smiles_batch,
             return_attn=True,
         )
-
         if output is None:
             raise ValueError(f"Model returned None for batch {batch_idx}")
 
-        # --- This unpacking was already correct ---
         (
             logits,
             attn_entropy_loss,
@@ -112,26 +115,25 @@ def train_one_epoch(
             _,
             prompt_attn_weights,
         ) = output
-        # ---------------------------------------------
 
-        # --- MODIFICATION: Aggregate prompt attention stats from the batch ---
+        # Aggregate prompt attention stats
         if prompt_attn_weights:
             for item_prompt_weights in prompt_attn_weights:
                 if isinstance(item_prompt_weights, dict):
                     fg_ids = item_prompt_weights.get("fg_ids")
                     weights = item_prompt_weights.get("weights")
-
                     if fg_ids is not None and weights is not None:
                         for fg_id, weight in zip(fg_ids, weights):
                             if fg_id != -1:
                                 total_attention_per_fg[fg_id] += weight
                                 count_per_fg[fg_id] += 1
-        # -------------------------------------------------------------------
 
+        # Loss (float32)
         loss = criterion(logits, labels)
         loss += lambda_entropy * attn_entropy_loss
         loss += lambda_prior * token_prior_loss
 
+        # Backward + step (no AMP)
         loss.backward()
         torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
         optimizer.step()
@@ -144,7 +146,7 @@ def train_one_epoch(
         auc_agg.update(labels.detach(), probs)
         pr_agg.update(labels.detach(), probs)
 
-        # Attention visualization
+        # Attention visualization (kept commented as in your original)
         # if (
         #     batch_idx == batch_to_log_idx
         #     and not has_logged_attention
@@ -156,7 +158,6 @@ def train_one_epoch(
         #     plot_path = os.path.join(
         #         plot_dir, f"batch_{batch_idx}_idx_{random_idx}.png"
         #     )
-
         #     visualize_attention_weights(
         #         g2t_weights[random_idx].detach(),
         #         attn_mask[random_idx],
@@ -165,7 +166,6 @@ def train_one_epoch(
         #         input_ids=input_ids[random_idx],
         #         tokenizer_obj=tokenizer_obj,
         #     )
-
         #     logger.debug(f"Graph norm: {graph_repr.norm(dim=1).mean():.4f}")
         #     logger.debug(f"Attention norm: {attn_output.norm(dim=1).mean():.4f}")
         #     logger.debug(
@@ -174,7 +174,6 @@ def train_one_epoch(
         #         f"scale_attn={model.scale_attn.item():.4f}, "
         #         f"scale_aux={model.scale_aux.item():.4f}"
         #     )
-
         #     has_logged_attention = True
 
     # Final metric aggregation
@@ -183,7 +182,7 @@ def train_one_epoch(
     avg_auc = auc_agg.compute()
     avg_pr = pr_agg.compute()
 
-    # --- MODIFICATION: Calculate and sort average attention weights ---
+    # Calculate and sort average attention weights
     avg_attention_per_fg = {
         fg_id: total_attention_per_fg[fg_id] / count
         for fg_id, count in count_per_fg.items()
@@ -192,7 +191,6 @@ def train_one_epoch(
     sorted_fgs = sorted(
         avg_attention_per_fg.items(), key=lambda item: item[1], reverse=True
     )
-    # ---------------------------------------------------------------
 
     logger.info(
         f"Training complete. Avg Loss: {avg_loss:.4f}, MCC: {avg_mcc:.4f}, AUC: {avg_auc:.4f}, PR-AUC: {avg_pr:.4f}"

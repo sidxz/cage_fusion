@@ -22,6 +22,7 @@ from typing import List, Optional
 from rdkit import Chem
 from functools import partial
 
+
 # Set environment variable to handle tokenizer parallelism warning
 # os.environ["TOKENIZERS_PARALLELISM"] = "false"
 
@@ -47,14 +48,6 @@ from cage_fusion.engine.utils import move_bmg_to_device
 
 install()
 console = Console()
-
-
-def _worker_init(_):
-    # prevent thread oversubscription per worker
-    os.environ.setdefault("OMP_NUM_THREADS", "1")
-    os.environ.setdefault("MKL_NUM_THREADS", "1")
-    # for read-only HDF5 access across processes, this can reduce stalls
-    os.environ.setdefault("HDF5_USE_FILE_LOCKING", "FALSE")
 
 
 def predict_smiles(
@@ -107,73 +100,74 @@ def predict_smiles(
     if scaler is None or not hasattr(scaler, "mean_"):
         raise ValueError("Failed to load a valid, fitted scaler.")
 
-    # df_with_original_index = (
-    #     input_df.copy().reset_index().rename(columns={"index": "original_index"})
-    # )
+    df_with_original_index = (
+        input_df.copy().reset_index().rename(columns={"index": "original_index"})
+    )
+    dummy_labels = [tasks[0]] if tasks else ["Label"]
     temp_features_dir = temp_dir or tempfile.mkdtemp()
     os.makedirs(temp_features_dir, exist_ok=True)
 
     h5_path, returned_scaler, num_featurized_samples = featurize_and_save_streaming(
-        df=input_df,
+        df=df_with_original_index,
         name="inference",
-        label_cols=[],
+        label_cols=dummy_labels,
         cache_dir=temp_features_dir,
         tokenizer=tokenizer,
         model=embedding_model,
         fit_scaler=False,
         scaler=scaler,
-        batch_size=batch_size,
+        batch_size=5,
     )
 
-    collate_with_pad = partial(
-        collate_fn_for_cage_fusion, pad_token_id=tokenizer.pad_token_id
-    )
-    nu_of_workers = 0
+    print(f"Featurization complete. HDF5 path: {h5_path}")
 
-    common_loader_kwargs = dict(
-        collate_fn=collate_with_pad,
-        num_workers=nu_of_workers,  # tune for your box (4–8 is typical)
-        # prefetch_factor=2,  # keep modest; 4 can be heavy
-        # persistent_workers=True,
-        # pin_memory=True,
-        # multiprocessing_context="spawn",  # safer for h5py across workers
-        worker_init_fn=_worker_init,
-    )
-    common_dataset_kwargs = dict(
-        tokenizer_pad_id=tokenizer.pad_token_id,
-        prefer_normalized_aux=True,
-        return_ids=True,
-        total_num_workers=nu_of_workers,  # +1 for main process
-        graph_cache="auto",
-        single_worker_graph_cache=True,  # only worker 0 caches graphs
-        emb_cache_store_dtype=np.float32,  # or np.float16 if you switch HDF5 to fp16
-        return_emb_dtype=torch.float32,  # model wants fp32
-    )
+    
 
-    # dataset = CageFusionStreamingDataset(h5_path, graph_path, tokenizer.pad_token_id)
-    # assert len(dataset) == num_featurized_samples, "Data integrity check failed."
+    dataset = CageFusionStreamingDataset(h5_path, tokenizer.pad_token_id)
+    assert len(dataset) == num_featurized_samples, "Data integrity check failed."
+    
+    collate_with_pad = partial(collate_fn_for_cage_fusion, pad_token_id=tokenizer.pad_token_id)
 
-    # loader = torch.utils.data.DataLoader(
-    #     dataset,
-    #     batch_size=batch_size,
-    #     collate_fn=collate_fn_for_cage_fusion,
-    #     shuffle=False,
-    #     num_workers=0,
-    #     pin_memory=True,
-    # )
+    
 
     loader = torch.utils.data.DataLoader(
-        CageFusionStreamingDataset(
-            h5_path,
-            **common_dataset_kwargs,
-        ),
-        batch_size=config["batch_size"],
+        dataset,
+        batch_size=batch_size,
+        collate_fn=collate_with_pad,
         shuffle=False,
-        # generator=g,
-        **common_loader_kwargs,
+        num_workers=0,
+        pin_memory=True,
     )
 
-    print(f"Loaded {len(loader)} batches for inference.")
+    for batch in loader:
+        # print batch contents for debugging
+        (
+            bmg,
+            token_embs,
+            attn_mask,
+            aux_feats,
+            labels_tensor,
+            input_ids,
+            smiles_batch,
+            original_indices_batch,
+            ids_list
+        ) = batch
+        print(f"Batch BMG: {bmg}")
+        print(f"Batch token embeddings shape: {token_embs.shape}")
+        print(f"Batch attention mask shape: {attn_mask.shape}")
+        # print attn mask of first sample
+        # print(f"Batch attention mask: {attn_mask[0]}")
+        print(f"Batch auxiliary features shape: {aux_feats.shape}")
+
+        print(f"Batch labels shape: {labels_tensor.shape}")
+        print(f"Batch input IDs shape: {input_ids.shape}")
+        print(f"Batch SMILES: {smiles_batch}")
+        print(f"Batch original indices: {original_indices_batch}")
+        print(f"Batch IDs: {ids_list}")
+        # DEBUG END
+
+    # DEBUG END
+    return
 
     all_preds = []
     all_original_indices = []
@@ -193,11 +187,10 @@ def predict_smiles(
                 token_embs,
                 attn_mask,
                 aux_feats,
-                labels,
+                _,
                 input_ids,
                 smiles_batch,
                 original_indices_batch,
-                ids_list,
             ) = batch
 
             bmg = move_bmg_to_device(bmg, device)
@@ -400,8 +393,8 @@ def main():
             attn_plot_dir=args.attn_plot_dir,
             model_file_name=args.model_file_name,
         )
-        predictions_df.to_csv(args.output, index=False)
-        logger.info(f"Predictions successfully saved to {args.output}")
+        # predictions_df.to_csv(args.output, index=False)
+        # logger.info(f"Predictions successfully saved to {args.output}")
     except Exception as e:
         logger.error(f"An unexpected error occurred: {e}")
         traceback.print_exc()

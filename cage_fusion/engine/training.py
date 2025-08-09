@@ -99,8 +99,10 @@ def train_model(
 
     checkpoint_path = os.path.join(checkpoint_dir, "latest_checkpoint.pt")
     best_model_path = os.path.join(checkpoint_dir, "best_model.pt")
+    best_model_mcc_path = os.path.join(checkpoint_dir, "best_model_mcc.pt")
     start_epoch = 1
     best_val_auc = -1.0
+    best_val_mcc = -1.0
 
     # Resume logic...
     if os.path.exists(checkpoint_path):
@@ -127,6 +129,7 @@ def train_model(
             start_epoch = checkpoint.get("epoch", 0) + 1
             history = checkpoint.get("history", {})
             best_val_auc = checkpoint.get("best_val_auc", -1.0)
+            best_val_mcc = checkpoint.get("best_val_mcc", -1.0)
         else:
             model.load_state_dict(checkpoint["model_state_dict"], strict=True)
             # PATCH: Only load optimizer and scheduler state dicts if param groups match!
@@ -144,6 +147,7 @@ def train_model(
                 )
             history = checkpoint["history"]
             best_val_auc = checkpoint.get("best_val_auc", -1.0)
+            best_val_mcc = checkpoint.get("best_val_mcc", -1.0)
             start_epoch = checkpoint["epoch"] + 1
             for state in optimizer.state.values():
                 for k, v in state.items():
@@ -253,6 +257,7 @@ def train_model(
             "scheduler_state_dict": scheduler.state_dict(),
             "history": history,
             "best_val_auc": best_val_auc,
+            "best_val_mcc": best_val_mcc,
             "config": config,
             "best_thresholds": best_thresholds,
         }
@@ -266,6 +271,15 @@ def train_model(
             torch.save(best_checkpoint_data, best_model_path)
             logger.info(
                 f"New best model saved at {best_model_path} with AUC: {best_val_auc:.4f}"
+            )
+        if val_mcc > best_val_mcc:
+            best_val_mcc = val_mcc
+            best_checkpoint_data = dict(checkpoint_data)
+            best_checkpoint_data["best_val_mcc"] = best_val_mcc
+            best_checkpoint_data["config"] = dict(config)
+            torch.save(best_checkpoint_data, best_model_mcc_path)
+            logger.info(
+                f"New best model saved at {best_model_mcc_path} with MCC: {best_val_mcc:.4f}"
             )
     logger.info("Training completed.")
     plot_training_history(history, output_dir=output_dir)

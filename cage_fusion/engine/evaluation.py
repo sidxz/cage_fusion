@@ -81,6 +81,8 @@ def evaluate_model(
             labels,
             input_ids_batch,
             smiles_batch,
+            original_indices_batch,
+            ids_list,
         ) = batch
 
         bmg = move_bmg_to_device(bmg, device)

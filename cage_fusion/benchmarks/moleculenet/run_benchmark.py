@@ -319,7 +319,7 @@ def run_benchmark(dataset_name, seed, force_rerun, rerun_train, splitter):
             df_original.copy().reset_index().rename(columns={"index": "original_index"})
         )
 
-        h5, glob_p, scaler_obj = featurize_and_save_streaming(
+        h5, glob_p, scaler_obj, num_featurized_samples = featurize_and_save_streaming(
             df=df,
             name=split,
             label_cols=tasks,

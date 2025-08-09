@@ -153,7 +153,7 @@ def predict_and_explain(
     temp_features_dir = tempfile.mkdtemp()
 
     try:
-        h5_path, graph_path, _ = featurize_and_save_streaming(
+        h5_path, graph_path, _, num_featurized_samples = featurize_and_save_streaming(
             df=input_df,
             name="explain_temp",
             label_cols=dummy_labels,
@@ -167,6 +167,10 @@ def predict_and_explain(
         dataset = CageFusionStreamingDataset(
             h5_path, graph_path, tokenizer.pad_token_id
         )
+        assert (
+            len(dataset) == num_featurized_samples
+        ), f"Data integrity check failed: Dataset length ({len(dataset)}) does not match featurized samples ({num_featurized_samples})."
+        
         # We create a loader with batch size 1
         loader = torch.utils.data.DataLoader(
             dataset, batch_size=1, collate_fn=collate_fn_for_cage_fusion, shuffle=False
