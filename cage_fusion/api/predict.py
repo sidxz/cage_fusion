@@ -13,6 +13,7 @@ import numpy as np
 import argparse
 import traceback
 import h5py
+import tempfile
 from transformers import AutoTokenizer, AutoModel
 from rich.console import Console
 from rich.traceback import install
@@ -21,9 +22,6 @@ from tqdm import tqdm
 from typing import List, Optional
 from rdkit import Chem
 from functools import partial
-
-# Set environment variable to handle tokenizer parallelism warning
-# os.environ["TOKENIZERS_PARALLELISM"] = "false"
 
 # Add project root to the Python path
 project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
@@ -55,6 +53,99 @@ def _worker_init(_):
     os.environ.setdefault("MKL_NUM_THREADS", "1")
     # for read-only HDF5 access across processes, this can reduce stalls
     os.environ.setdefault("HDF5_USE_FILE_LOCKING", "FALSE")
+
+
+def _plot_batch_attentions(
+    j: int,
+    tokenizer,
+    logits: torch.Tensor,
+    g2t_weights: Optional[torch.Tensor],
+    t2a_weights: Optional[torch.Tensor],
+    input_ids: torch.Tensor,
+    smiles_batch: List[str],
+    prompt_attn_weights,
+    attn_plot_dir: str,
+    original_idx: int,
+    weight_fg: Optional[float] = None,
+    weight_t2a: Optional[float] = None,
+) -> List[str]:
+    """
+    Plot all attention visualizations for a single sample in the batch
+    and return top tokens (as strings) for optional inclusion in the CSV.
+    """
+    if g2t_weights is None or t2a_weights is None:
+        return []
+
+    sample_plot_dir = os.path.join(attn_plot_dir, f"idx_{original_idx}")
+    os.makedirs(sample_plot_dir, exist_ok=True)
+
+    smiles_to_plot = smiles_batch[j]
+
+    # ----- Top tokens from graph->token -----
+    token_scores = g2t_weights[j].sum(dim=(0, 1))
+    special_ids = [
+        tokenizer.pad_token_id,
+        tokenizer.cls_token_id,
+        tokenizer.sep_token_id,
+    ]
+    for sid in special_ids:
+        token_scores[input_ids[j] == sid] = -1e9
+
+    top_token_indices = torch.argsort(token_scores, descending=True)[:3]
+    full_ids = input_ids[j].detach().cpu().numpy()
+    actual_ids = full_ids[full_ids != tokenizer.pad_token_id]
+    full_tokens = tokenizer.convert_ids_to_tokens(actual_ids)
+
+    # Plot top token attentions (token -> atoms)
+    visualize_top_token_attentions(
+        smiles=smiles_to_plot,
+        attention_weights=t2a_weights[j],
+        full_token_list=full_tokens,
+        top_token_indices=top_token_indices.detach().cpu().numpy(),
+        output_dir=sample_plot_dir,
+    )
+
+    # ----- Total atom contribution (token->atom) -----
+    attn = t2a_weights[j]
+    if attn.ndim == 3:
+        attn = attn.mean(dim=0)
+
+    logit_vec = logits[j].detach().cpu().numpy()
+    task_idx = int(np.argmax(np.abs(logit_vec)))
+    pred_logit = float(logit_vec[task_idx])
+
+    visualize_total_atom_contribution(
+        smiles=smiles_to_plot,
+        t2a_weights_sample=attn,
+        pred_logit=pred_logit,
+        output_path=os.path.join(sample_plot_dir, "atom_total_contrib.png"),
+    )
+
+    # ----- FG attention (prompt) and combined map -----
+    if prompt_attn_weights and prompt_attn_weights[j] is not None:
+        visualize_fg_attention(
+            smiles=smiles_to_plot,
+            prompt_attn_weights=prompt_attn_weights[j],
+            output_path=os.path.join(sample_plot_dir, "fg_prompt_attention.png"),
+            title="Functional Group Attention (PROMPT)",
+        )
+        if (weight_fg is not None) and (weight_t2a is not None):
+            visualize_combined_atom_contribution(
+                smiles=smiles_to_plot,
+                t2a_weights_sample=attn,
+                pred_logit=pred_logit,
+                prompt_attn_weights=prompt_attn_weights[j],
+                output_path=os.path.join(sample_plot_dir, "atom_combined_contrib.png"),
+                weight_t2a=float(weight_t2a),
+                weight_fg=float(weight_fg),
+            )
+
+    kept = []
+    top_idx_np = set(top_token_indices.detach().cpu().numpy().tolist())
+    for idx, tok in enumerate(full_tokens):
+        if idx in top_idx_np:
+            kept.append(tok)
+    return kept
 
 
 def predict_smiles(
@@ -99,17 +190,17 @@ def predict_smiles(
     model = CAGEFusionModel(config).to(device)
     model.load_state_dict(checkpoint["model_state_dict"])
     model.eval()
+
     tokenizer = AutoTokenizer.from_pretrained(config["model_checkpoint"])
     embedding_model = (
         AutoModel.from_pretrained(config["model_checkpoint"]).to(device).eval()
     )
+
     scaler = joblib.load(scaler_path)
     if scaler is None or not hasattr(scaler, "mean_"):
         raise ValueError("Failed to load a valid, fitted scaler.")
 
-    # df_with_original_index = (
-    #     input_df.copy().reset_index().rename(columns={"index": "original_index"})
-    # )
+    # temp features dir
     temp_features_dir = temp_dir or tempfile.mkdtemp()
     os.makedirs(temp_features_dir, exist_ok=True)
 
@@ -128,59 +219,35 @@ def predict_smiles(
     collate_with_pad = partial(
         collate_fn_for_cage_fusion, pad_token_id=tokenizer.pad_token_id
     )
-    nu_of_workers = 0
+    num_workers = 0
 
     common_loader_kwargs = dict(
         collate_fn=collate_with_pad,
-        num_workers=nu_of_workers,  # tune for your box (4–8 is typical)
-        # prefetch_factor=2,  # keep modest; 4 can be heavy
-        # persistent_workers=True,
-        # pin_memory=True,
-        # multiprocessing_context="spawn",  # safer for h5py across workers
+        num_workers=num_workers,
         worker_init_fn=_worker_init,
     )
     common_dataset_kwargs = dict(
         tokenizer_pad_id=tokenizer.pad_token_id,
         prefer_normalized_aux=True,
         return_ids=True,
-        total_num_workers=nu_of_workers,  # +1 for main process
+        total_num_workers=num_workers,
         graph_cache="auto",
         single_worker_graph_cache=True,  # only worker 0 caches graphs
-        emb_cache_store_dtype=np.float32,  # or np.float16 if you switch HDF5 to fp16
-        return_emb_dtype=torch.float32,  # model wants fp32
+        emb_cache_store_dtype=np.float32,  # or np.float16 if your HDF5 is fp16
+        return_emb_dtype=torch.float32,  # model expects fp32
     )
-
-    # dataset = CageFusionStreamingDataset(h5_path, graph_path, tokenizer.pad_token_id)
-    # assert len(dataset) == num_featurized_samples, "Data integrity check failed."
-
-    # loader = torch.utils.data.DataLoader(
-    #     dataset,
-    #     batch_size=batch_size,
-    #     collate_fn=collate_fn_for_cage_fusion,
-    #     shuffle=False,
-    #     num_workers=0,
-    #     pin_memory=True,
-    # )
 
     loader = torch.utils.data.DataLoader(
         CageFusionStreamingDataset(
             h5_path,
             **common_dataset_kwargs,
         ),
-        batch_size=config["batch_size"],
+        batch_size=config.get("batch_size", batch_size),
         shuffle=False,
-        # generator=g,
         **common_loader_kwargs,
     )
-    
-    
 
-    print(f"Loaded {len(loader)} batches for inference.")
-
-    all_preds = []
-    all_original_indices = []
-    all_top_attention_tokens = []
-    
+    logger.info(f"Loaded {len(loader)} batches for inference.")
     predictions_df = pd.DataFrame()
 
     if plot_all_attention and attn_plot_dir:
@@ -188,10 +255,9 @@ def predict_smiles(
         logger.info(f"Attention plots will be saved to: {attn_plot_dir}")
 
     with torch.no_grad():
-        batch_predictions_df = []
         for batch in tqdm(loader, desc="Predicting"):
             if batch is None:
-                logger.warning("XXXXXXXXXXXX Received an empty batch, skipping.")
+                logger.warning("Received an empty batch, skipping.")
                 continue
 
             (
@@ -205,20 +271,8 @@ def predict_smiles(
                 original_indices_batch,
                 ids_list,
             ) = batch
-            
-            print(f"Batch BMG: {bmg}")
-            print(f"Batch token embeddings shape: {token_embs.shape}")
-            print(f"Batch attention mask shape: {attn_mask.shape}")
-            # print attn mask of first sample
-            # print(f"Batch attention mask: {attn_mask[0]}")
-            print(f"Batch auxiliary features shape: {aux_feats.shape}")
 
-            print(f"Batch labels shape: {labels}")
-            print(f"Batch input IDs shape: {input_ids.shape}")
-            print(f"Batch SMILES: {smiles_batch}")
-            print(f"Batch original indices: {original_indices_batch}")
-            print(f"Batch IDs: {ids_list}")
-
+            # move to device
             bmg = move_bmg_to_device(bmg, device)
             token_embs, attn_mask, aux_feats, input_ids = [
                 t.to(device) for t in [token_embs, attn_mask, aux_feats, input_ids]
@@ -237,138 +291,81 @@ def predict_smiles(
             logits, _, _, g2t_weights, t2a_weights, _, _, _, prompt_attn_weights = (
                 model_output
             )
-            print(f"Logits shape: {logits.shape}")
-            # check if batch length and logits length match
+
             if logits.shape[0] != len(smiles_batch):
                 raise ValueError(
                     f"Logits shape {logits.shape} does not match batch size {len(smiles_batch)}"
                 )
-            
-            probabilities = torch.sigmoid(logits).cpu().numpy()
 
-            # Build batch predictions DataFrame efficiently
-            batch_predictions_df = pd.DataFrame({
-                "Original Index": original_indices_batch.cpu().numpy(),
-                "Id": ids_list,
-                "SMILES": smiles_batch,
-            })
+            probabilities = torch.sigmoid(logits).detach().cpu().numpy()
+
+            # Build batch predictions DataFrame
+            batch_predictions_df = pd.DataFrame(
+                {
+                    "Original Index": original_indices_batch.detach().cpu().numpy(),
+                    "Id": ids_list,
+                    "SMILES": smiles_batch,
+                }
+            )
             for idx, task in enumerate(tasks):
-                batch_predictions_df[f"pred_class_{task}"] = (probabilities[:, idx] > best_thresholds[idx]).astype(int)
+                batch_predictions_df[f"pred_class_{task}"] = (
+                    probabilities[:, idx] > best_thresholds[idx]
+                ).astype(int)
                 batch_predictions_df[task] = probabilities[:, idx]
-            ordered_cols = ["Original Index", "Id", "SMILES"] + [f"pred_class_{task}" for task in tasks] + list(tasks)
-            batch_predictions_df = batch_predictions_df[ordered_cols]
-            predictions_df = pd.concat([predictions_df, batch_predictions_df], ignore_index=True)
-            
-            
 
-            all_preds.append(torch.sigmoid(logits).cpu().numpy())
-            #print the shape of all_preds
-            print(f"All predictions shape: {np.array(all_preds).shape}")
-            # print the first prediction
-            print(f"First prediction: {all_preds[0][0]}")
-            # print(f"Second prediction: {all_preds[0][1]}")
-            # print(f"Third prediction: {all_preds[0][2]}")
-            # print(f"Fourth prediction: {all_preds[0][3]}")
-            # print(f"Fifth prediction: {all_preds[0][4]}")
-            all_original_indices.append(original_indices_batch.cpu().numpy())
-
+            # Optional: per-sample top tokens + attention plots (CSV-friendly string)
             if plot_all_attention and attn_plot_dir:
+                weight_fg = (
+                    float(model.alpha.detach().cpu().item())
+                    if hasattr(model, "alpha")
+                    else None
+                )
+                weight_t2a = (
+                    float(model.scale_graph.detach().cpu().item())
+                    if hasattr(model, "scale_graph")
+                    else None
+                )
+
+                batch_top_tokens = []
                 for j in range(len(smiles_batch)):
-                    original_idx = original_indices_batch[j].item()
-                    sample_plot_dir = os.path.join(attn_plot_dir, f"idx_{original_idx}")
-                    os.makedirs(sample_plot_dir, exist_ok=True)
-
-                    if g2t_weights is not None and t2a_weights is not None:
-                        smiles_to_plot = smiles_batch[j]
-                        token_scores = g2t_weights[j].sum(dim=(0, 1))
-                        special_ids = [
-                            tokenizer.pad_token_id,
-                            tokenizer.cls_token_id,
-                            tokenizer.sep_token_id,
-                        ]
-                        for special_id in special_ids:
-                            token_scores[input_ids[j] == special_id] = -1e9
-
-                        top_token_indices = torch.argsort(
-                            token_scores, descending=True
-                        )[:3]
-
-                        full_token_list_ids = input_ids[j].cpu().numpy()
-                        actual_tokens_mask = (
-                            full_token_list_ids != tokenizer.pad_token_id
-                        )
-                        actual_tokens_ids = full_token_list_ids[actual_tokens_mask]
-                        full_token_list_str = tokenizer.convert_ids_to_tokens(
-                            actual_tokens_ids
-                        )
-
-                        top_tokens = [
-                            full_token_list_str[idx]
-                            for idx in top_token_indices.cpu().numpy()
-                            if idx < len(full_token_list_str)
-                        ]
-                        all_top_attention_tokens.append(top_tokens)
-
-                        visualize_top_token_attentions(
-                            smiles=smiles_to_plot,
-                            attention_weights=t2a_weights[j],
-                            full_token_list=full_token_list_str,
-                            top_token_indices=top_token_indices.cpu().numpy(),
-                            output_dir=sample_plot_dir,
-                        )
-
-                        # Total contribution
-                        attn = t2a_weights[j]
-                        if attn.ndim == 3:
-                            attn = attn.mean(dim=0)
-
-                        logit_vec = logits[j].detach().cpu().numpy()
-                        task_idx = np.argmax(np.abs(logit_vec))
-                        pred_logit = logit_vec[task_idx]
-
-                        visualize_total_atom_contribution(
-                            smiles=smiles_to_plot,
-                            t2a_weights_sample=attn,
-                            pred_logit=pred_logit,
-                            output_path=os.path.join(
-                                sample_plot_dir, "atom_total_contrib.png"
-                            ),
-                        )
-
-                        # FG Attention (prompt)
-                        if prompt_attn_weights and prompt_attn_weights[j] is not None:
-                            visualize_fg_attention(
-                                smiles=smiles_to_plot,
-                                prompt_attn_weights=prompt_attn_weights[j],
-                                output_path=os.path.join(
-                                    sample_plot_dir, "fg_prompt_attention.png"
-                                ),
-                                title="Functional Group Attention (PROMPT)",
-                            )
-
-                            weight_fg = float(model.alpha.detach().cpu().item())
-                            weight_t2a = float(model.scale_graph.detach().cpu().item())
-
-                            visualize_combined_atom_contribution(
-                                smiles=smiles_to_plot,
-                                t2a_weights_sample=attn,
-                                pred_logit=pred_logit,
-                                prompt_attn_weights=prompt_attn_weights[j],
-                                output_path=os.path.join(
-                                    sample_plot_dir, "atom_combined_contrib.png"
-                                ),
-                                weight_t2a=weight_t2a,
-                                weight_fg=weight_fg,
-                            )
-                        else:
-                            logger.warning(
-                                f"No prompt attention found for sample idx {original_idx}"
-                            )
-                    else:
-                        all_top_attention_tokens.append(None)
+                    original_idx = int(original_indices_batch[j].item())
+                    kept_tokens = _plot_batch_attentions(
+                        j=j,
+                        tokenizer=tokenizer,
+                        logits=logits,
+                        g2t_weights=g2t_weights,
+                        t2a_weights=t2a_weights,
+                        input_ids=input_ids,
+                        smiles_batch=smiles_batch,
+                        prompt_attn_weights=prompt_attn_weights,
+                        attn_plot_dir=attn_plot_dir,
+                        original_idx=original_idx,
+                        weight_fg=weight_fg,
+                        weight_t2a=weight_t2a,
+                    )
+                    batch_top_tokens.append(
+                        "|".join(kept_tokens) if kept_tokens else ""
+                    )
             else:
-                all_top_attention_tokens.extend([None] * len(original_indices_batch))
+                batch_top_tokens = [""] * len(smiles_batch)
 
+            batch_predictions_df["top_tokens"] = batch_top_tokens
+
+            # Reorder columns
+            ordered_cols = (
+                ["Original Index", "Id", "SMILES"]
+                + [f"pred_class_{task}" for task in tasks]
+                + list(tasks)
+                + ["top_tokens"]
+            )
+            batch_predictions_df = batch_predictions_df[ordered_cols]
+
+            # Append to global predictions
+            predictions_df = pd.concat(
+                [predictions_df, batch_predictions_df], ignore_index=True
+            )
+
+    # cleanup temp
     try:
         if temp_dir is None:
             shutil.rmtree(temp_features_dir)
