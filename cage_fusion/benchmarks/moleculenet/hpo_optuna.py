@@ -109,7 +109,7 @@ def prepare_features_once(args: argparse.Namespace, features_dir: str):
             df_original.copy().reset_index().rename(columns={"index": "original_index"})
         )
 
-        _, _, scaler_obj = featurize_and_save_streaming(
+        _, _, scaler_obj, num_featurized_samples = featurize_and_save_streaming(
             df=df,
             name=split,
             label_cols=tasks,

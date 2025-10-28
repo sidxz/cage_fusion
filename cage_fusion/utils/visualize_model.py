@@ -76,8 +76,8 @@ def visualize_model_architecture(output_path="model_architecture"):
     
     try:
         dummy_df = pd.DataFrame({'SMILES': ['c1ccccc1', 'CC(=O)OC1=CC=CC=C1C(=O)O']})
-        
-        h5_path, graph_path, _ = featurize_and_save_streaming(
+
+        h5_path, graph_path, _, num_featurized_samples = featurize_and_save_streaming(
             df=dummy_df,
             name="viz_temp",
             label_cols=['dummy'],
@@ -89,6 +89,10 @@ def visualize_model_architecture(output_path="model_architecture"):
         )
 
         dataset = CageFusionStreamingDataset(h5_path, graph_path, tokenizer.pad_token_id)
+        assert (
+            len(dataset) == num_featurized_samples
+        ), f"Data integrity check failed: Dataset length ({len(dataset)}) does not match featurized samples ({num_featurized_samples})."
+        
         loader = torch.utils.data.DataLoader(
             dataset,
             batch_size=2,

@@ -1,7 +1,6 @@
 #!/usr/bin/env python3
 """
-MoleculeNet benchmark for CAGE-Fusion — single-phase training
-Matches paths, variables, and loader setup from the phased script, but trains in one pass.
+MoleculeNet benchmark for CAGE-Fusion — updated to mirror the latest training script.
 """
 
 import os
@@ -27,18 +26,18 @@ from rich.console import Console
 from rich.table import Table
 from rich.traceback import install
 
-# ========= Project path setup (match training/phased script) =========
+# ======== Project path setup (match training script) ========
 project_root = os.path.abspath(
     os.path.join(os.path.dirname(__file__), "../../cage_fusion")
 )
 if project_root not in sys.path:
     sys.path.insert(0, project_root)
 
-# ========= Local imports =========
+# ======== Local imports ========
 from cage_fusion.configs import get_default_config
 from cage_fusion.featurizers import featurize_and_save_streaming
 from cage_fusion.models import CAGEFusionModel
-from cage_fusion.engine.training import train_model
+from cage_fusion.engine.training import staged_finetune
 from cage_fusion.engine.evaluation import evaluate_model
 from cage_fusion.engine.dataset import CageFusionStreamingDataset
 from cage_fusion.engine.data_utils import collate_fn_for_cage_fusion
@@ -47,13 +46,13 @@ from cage_fusion.engine.logging import plot_confusion_matrix
 from cage_fusion.utils.model_utils import load_partial_weights
 from cage_fusion.utils.logging_utils import logger
 
-# ========= Console / rich setup =========
+# ======== Console setup ========
 install()
 console = Console()
 
-# ========= Run + directory config (parity with phased script) =========
+# ======== Run + directory config (mirrors training script) ========
 USE_CO_ATTENTION = True
-ATTN_MODE = "cross"  # 'cross' | 'self_tokens' | 'self_graph' | 'self_both'
+ATTN_MODE = "self_both"  # 'cross' | 'self_tokens' | 'self_graph' | 'self_both'
 USE_AUX_FEATURES = True
 USE_FG_PROMPT = True
 EMBEDDING_MODEL = "bert"
@@ -64,12 +63,8 @@ DEFAULT_SEED = 54
 DEFAULT_FORCE_RERUN = False
 DEFAULT_RERUN_TRAIN = False
 DEFAULT_SPLITTER = "scaffold"
-
-# Single-phase knobs
-DEFAULT_BATCH_SIZE = 256
-DEFAULT_LR = 0.005
-DEFAULT_NUM_EPOCHS = 35
-DEFAULT_WARMUP_FRACTION = 0.1  # fraction of total steps
+DEFAULT_BATCH_SIZE = 128
+DEFAULT_LR = 1e-3
 
 DIRNAME = (
     f"Benchmark-{DEFAULT_DATASET}-{CO_ATTENTION_LAYERS}-{EMBEDDING_MODEL}-v4"
@@ -81,13 +76,17 @@ FEATURES_ROOT = os.path.join(DATA_ROOT, "features", EMBEDDING_MODEL, DIRNAME)
 CHECKPOINTS_ROOT = os.path.join("checkpoints", EMBEDDING_MODEL, DIRNAME)
 OUTPUT_ROOT = os.path.join("output", EMBEDDING_MODEL, DIRNAME)
 
+DEFAULT_NUM_EPOCHS_WARMUP = 1  # Phase 0: aux-only warmup
+DEFAULT_NUM_EPOCHS_PHASE1 = 2  # Phase 1: core model only
+DEFAULT_NUM_EPOCHS_AUX_WARMUP = 3  # Phase 2: aux-only warmup
+DEFAULT_NUM_EPOCHS_PHASE2 = 30  # Phase 3: fine-tune all
+
 MODEL_BEST = "best_model.pt"
 MODEL_LATEST = "latest_checkpoint.pt"
 USE_PRETRAINED_WEIGHTS = False
 MIN_TOKEN_FREQ = 10  # kept for optional token prior utilities
 
 
-# ========= Utilities =========
 def set_seed(seed_value=DEFAULT_SEED):
     random.seed(seed_value)
     np.random.seed(seed_value)
@@ -161,9 +160,6 @@ def load_moleculenet_dataset(dataset_name, data_dir, seed, splitter):
 def run_final_evaluation(
     checkpoint_path, title, test_loader, device, cache_dir, output_dir
 ):
-    """
-    Load model from checkpoint and evaluate on test set (tables + optional confusion matrices).
-    """
     console.rule(f"[bold green]Final Evaluation on Test Set ({title})")
     if not os.path.exists(checkpoint_path):
         logger.error(f"{title} checkpoint not found: {checkpoint_path}")
@@ -218,7 +214,7 @@ def run_final_evaluation(
         )
         console.print(task_table)
 
-    # Confusion matrices (optional but keeps parity with phased script)
+    # Optional: save confusion matrices (parity with training script)
     logger.info("Generating confusion matrices...")
     all_labels, all_probs = [], []
     for batch in test_loader:
@@ -270,9 +266,8 @@ def run_final_evaluation(
     logger.info(f"Saved confusion matrices to {cm_dir}")
 
 
-# ========= Main pipeline =========
 def run_benchmark(dataset_name, seed, force_rerun, rerun_train, splitter):
-    # Build run-scoped paths (match phased script layout)
+    # Build run-scoped paths
     run_id = f"{dataset_name}_seed{seed}"
     base_cache_dir = os.path.join(CACHE_ROOT, run_id)
     features_dir = os.path.join(FEATURES_ROOT, run_id)
@@ -280,7 +275,7 @@ def run_benchmark(dataset_name, seed, force_rerun, rerun_train, splitter):
     output_dir = os.path.join(OUTPUT_ROOT, run_id)
     data_dir = os.path.join(DATA_DIR, dataset_name)
 
-    # Base config (then overlay run specifics to mirror phased script)
+    # Base config (then overlay run specifics)
     config = get_default_config()
     config.update(
         dict(
@@ -296,14 +291,11 @@ def run_benchmark(dataset_name, seed, force_rerun, rerun_train, splitter):
             output_dir=output_dir,
             data_dir=data_dir,
             batch_size=DEFAULT_BATCH_SIZE,
-            num_epochs=DEFAULT_NUM_EPOCHS,
-            warmup_fraction=DEFAULT_WARMUP_FRACTION,
         )
     )
 
     console.rule(
-        f"[bold cyan]MoleculeNet Benchmark (Single-Phase): {dataset_name} | Seed={seed} | Splitter={splitter} | "
-        f"ForceRerun={force_rerun} | RerunTrain={rerun_train}"
+        f"[bold cyan]MoleculeNet Benchmark: {dataset_name} | Seed={seed} | Splitter={splitter} | ForceRerun={force_rerun} | RerunTrain={rerun_train}"
     )
     set_seed(seed)
 
@@ -328,7 +320,7 @@ def run_benchmark(dataset_name, seed, force_rerun, rerun_train, splitter):
             logger.error("Run without --rerun-train or with --force-rerun first.")
             sys.exit(1)
         if os.path.exists(base_cache_dir):
-            logger.warning(f"Rerun training: deleting cache {base_cache_dir}")
+            logger.warning(f"Rerun training: deleting {base_cache_dir}")
             shutil.rmtree(base_cache_dir)
         if os.path.exists(checkpoints_dir):
             logger.warning(f"Rerun training: deleting {checkpoints_dir}/*.pt")
@@ -349,7 +341,7 @@ def run_benchmark(dataset_name, seed, force_rerun, rerun_train, splitter):
     config["num_tasks"] = len(tasks)
     config["tasks"] = tasks
 
-    # Featurization (streaming, aligned with phased/training script)
+    # Featurization (streaming, aligned with training script)
     console.rule("[bold yellow]Featurization and Setup")
     tokenizer = AutoTokenizer.from_pretrained(config["model_checkpoint"])
     embedding_model = AutoModel.from_pretrained(config["model_checkpoint"]).eval()
@@ -363,14 +355,17 @@ def run_benchmark(dataset_name, seed, force_rerun, rerun_train, splitter):
     scaler_path = os.path.join(checkpoints_dir, "aux_features_scaler.pkl")
 
     if rerun_train:
+        # Skip featurization; reuse existing features/scaler
         logger.info(
             "Rerun training: reusing existing features and scaler; skipping featurization."
         )
         scaler = joblib.load(scaler_path)
     else:
+        # Fresh (or force-rerun) featurization
         scaler = None
         for split, df in [("train", df_train), ("val", df_val), ("test", df_test)]:
             fit_scaler = split == "train"
+            # Add original_index for tracking (optional, harmless if not used)
             df = df.copy().reset_index().rename(columns={"index": "original_index"})
             h5, returned_scaler, _n = featurize_and_save_streaming(
                 df=df,
@@ -380,7 +375,7 @@ def run_benchmark(dataset_name, seed, force_rerun, rerun_train, splitter):
                 tokenizer=tokenizer,
                 model=embedding_model,
                 fit_scaler=fit_scaler,
-                scaler=out_scaler if (out_scaler := scaler) is not None else None,
+                scaler=scaler,  # None for train; then pass train scaler to val/test
                 batch_size=500,
             )
             h5_paths[split] = h5
@@ -389,7 +384,7 @@ def run_benchmark(dataset_name, seed, force_rerun, rerun_train, splitter):
                 joblib.dump(scaler, scaler_path)
                 logger.info(f"Scaler saved to {scaler_path}")
 
-    # Datasets + loaders (mirror phased script)
+    # Datasets + loaders (mirror training script)
     g = torch.Generator().manual_seed(seed)
     collate_with_pad = partial(
         collate_fn_for_cage_fusion, pad_token_id=tokenizer.pad_token_id
@@ -441,7 +436,7 @@ def run_benchmark(dataset_name, seed, force_rerun, rerun_train, splitter):
         json.dump(config, f, indent=2)
     logger.info("Configuration saved.")
 
-    # Model + single-phase training
+    # Model + training phases
     device = torch.device(config["device"])
     model = CAGEFusionModel(config).to(device)
     if USE_PRETRAINED_WEIGHTS:
@@ -451,29 +446,38 @@ def run_benchmark(dataset_name, seed, force_rerun, rerun_train, splitter):
         logger.info(f"Loading pretrained weights from {pretrain_weights_path}")
         load_partial_weights(model, pretrain_weights_path)
 
-    optimizer = torch.optim.Adam(model.parameters(), lr=config["learning_rate"])
     pos_weight = compute_pos_weight_from_h5(h5_path=h5_paths["train"]).to(device)
-    criterion = torch.nn.BCEWithLogitsLoss(pos_weight=pos_weight)
 
-    total_steps = len(train_loader) * config["num_epochs"]
-    scheduler = get_cosine_schedule_with_warmup(
-        optimizer,
-        num_warmup_steps=int(total_steps * config.get("warmup_fraction", 0.1)),
-        num_training_steps=total_steps,
-    )
+    def scheduler_fn(optimizer, phase):
+        if phase == "warmup":
+            num_epochs = DEFAULT_NUM_EPOCHS_WARMUP
+        elif phase == 1:
+            num_epochs = DEFAULT_NUM_EPOCHS_PHASE1
+        elif phase == "aux":
+            num_epochs = DEFAULT_NUM_EPOCHS_AUX_WARMUP
+        else:
+            num_epochs = DEFAULT_NUM_EPOCHS_PHASE2
+        return get_cosine_schedule_with_warmup(
+            optimizer,
+            num_warmup_steps=int(len(train_loader) * 0.1 * num_epochs),
+            num_training_steps=len(train_loader) * num_epochs,
+        )
 
-    console.rule("[bold yellow]Starting Training (single-phase)")
-    train_model(
+    console.rule("[bold yellow]Starting Training (staged finetune)")
+    staged_finetune(
         model=model,
         train_loader=train_loader,
         val_loader=val_loader,
-        optimizer=optimizer,
-        criterion=criterion,
-        scheduler=scheduler,
         device=device,
         config=config,
         label_names=tasks,
         tokenizer_obj=tokenizer,
+        pos_weight=pos_weight,
+        scheduler_fn=scheduler_fn,
+        num_epochs_warmup=DEFAULT_NUM_EPOCHS_WARMUP,
+        num_epochs_phase1=DEFAULT_NUM_EPOCHS_PHASE1,
+        num_epochs_aux_warmup=DEFAULT_NUM_EPOCHS_AUX_WARMUP,
+        num_epochs_phase2=DEFAULT_NUM_EPOCHS_PHASE2,
     )
 
     best_model_path = os.path.join(checkpoints_dir, MODEL_BEST)
@@ -503,10 +507,9 @@ def run_benchmark(dataset_name, seed, force_rerun, rerun_train, splitter):
     console.rule("[bold green]✨ Benchmark Complete!")
 
 
-# ========= CLI =========
 def parse_args():
     parser = argparse.ArgumentParser(
-        description="Run MoleculeNet benchmark for CAGE-Fusion (single-phase)."
+        description="Run MoleculeNet benchmark for CAGE-Fusion."
     )
     parser.add_argument(
         "--dataset",

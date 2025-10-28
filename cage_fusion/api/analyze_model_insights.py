@@ -126,7 +126,7 @@ def analyze_and_visualize(
             console.log(f"Loading and featurizing data from {csv_path}...")
             input_df = pd.read_csv(csv_path)
 
-            h5_path, graph_path, _ = featurize_and_save_streaming(
+            h5_path, graph_path, _, num_featurized_samples = featurize_and_save_streaming(
                 df=input_df,
                 name="analysis_temp",
                 label_cols=tasks,
@@ -140,6 +140,10 @@ def analyze_and_visualize(
         dataset = CageFusionStreamingDataset(
             h5_path, graph_path, tokenizer.pad_token_id
         )
+        assert (
+            len(dataset) == num_featurized_samples
+        ), f"Data integrity check failed: Dataset length ({len(dataset)}) does not match featurized samples ({num_featurized_samples})."
+        
         loader = torch.utils.data.DataLoader(
             dataset,
             batch_size=batch_size,

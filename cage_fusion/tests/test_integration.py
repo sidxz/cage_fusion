@@ -73,7 +73,7 @@ def run_library_test():
 
     # --- Step 3: Featurization ---
     console.rule("[bold yellow]Step 3/7: Featurization")
-    h5_path, _, _ = featurize_and_save_streaming(
+    h5_path, _, _, num_featurized_samples = featurize_and_save_streaming(
         df=df,
         name="dummy",
         label_cols=labels,

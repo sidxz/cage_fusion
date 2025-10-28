@@ -13,6 +13,14 @@ from ..engine.fg_utils import FG_NAMES, FG_SMARTS
 from ..utils.logging_utils import logger
 
 
+def minmax_neg1_1(x):
+    x = np.asarray(x)
+    minv, maxv = x.min(), x.max()
+    if np.isclose(maxv, minv):
+        return np.zeros_like(x)
+    return 2 * (x - minv) / (maxv - minv + 1e-8) - 1
+
+
 def visualize_fg_attention(
     smiles: str,
     prompt_attn_weights: dict,
@@ -35,6 +43,8 @@ def visualize_fg_attention(
 
     fg_ids = prompt_attn_weights.get("fg_ids", [])
     weights = np.array(prompt_attn_weights.get("weights", []))
+
+    weights = minmax_neg1_1(weights)  # Normalize to [-1, 1] range
 
     if len(fg_ids) == 0 or len(weights) == 0:
         logger.info("No functional groups to visualize for this molecule.")
@@ -147,8 +157,8 @@ def visualize_fg_attention(
     draw = ImageDraw.Draw(final_image)
 
     # --- Header ---
-    #draw.text((30, 20), title, font=title_font, fill="black")
-    #draw.text((30, 60), f"SMILES: {smiles}", font=text_font, fill="dimgray")
+    # draw.text((30, 20), title, font=title_font, fill="black")
+    # draw.text((30, 60), f"SMILES: {smiles}", font=text_font, fill="dimgray")
 
     # --- Molecule Image ---
     final_image.paste(mol_image, (0, header_height), mol_image)
