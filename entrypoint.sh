@@ -22,7 +22,6 @@ err() { log "${RED}" "$1"; }
 
 export HF_HOME HF_ENDPOINT HF_TOKEN
 export HF_HUB_CACHE="${HF_HOME}/hub"
-export TRANSFORMERS_CACHE="${HF_HOME}/transformers"
 export TOKENIZERS_PARALLELISM=false OMP_NUM_THREADS=1 MKL_NUM_THREADS=1
 
 ok "CAGE-FUSION API startup"
@@ -108,6 +107,7 @@ export TRANSFORMERS_OFFLINE=1 HF_HUB_OFFLINE=1
 ok "Transformers set to OFFLINE mode."
 
 # ---------- Torch diag (non-fatal) ----------
+ok "Torch diagnostics:"
 micromamba run -n cage-fusion python - <<'PY' || true
 import torch
 print("Torch:", torch.__version__, "CUDA available:", torch.cuda.is_available())

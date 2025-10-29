@@ -32,7 +32,6 @@ ENV CHECKPOINT_DIR=/checkpoints/nuisance-pred \
     MKL_NUM_THREADS=1 \
     HF_HOME=/home/${MAMBA_USER}/.cache/huggingface \
     HF_HUB_CACHE=/home/${MAMBA_USER}/.cache/huggingface/hub \
-    TRANSFORMERS_CACHE=/home/${MAMBA_USER}/.cache/huggingface/transformers \
     HF_HUB_ENABLE_HF_TRANSFER=1 \
     PORT=8080 \
     WORKERS=1 \
