@@ -1,6 +1,6 @@
 # Base with CUDA libs for GPU inference. For CPU-only, use debian-slim or python base.
-FROM nvidia/cuda:12.4.1-runtime-ubuntu22.04
-
+#FROM nvidia/cuda:12.4.1-runtime-ubuntu22.04
+FROM pytorch/pytorch:2.6.0-cuda12.4-cudnn9-runtime
 # Micromamba bootstrap (tiny and fast)
 ARG MAMBA_USER=mamba
 SHELL ["/bin/bash", "-o", "pipefail", "-c"]
@@ -35,7 +35,9 @@ ENV CHECKPOINT_DIR=/checkpoints/nuisance-pred \
     TRANSFORMERS_CACHE=/home/${MAMBA_USER}/.cache/huggingface/transformers \
     HF_HUB_ENABLE_HF_TRANSFER=1 \
     PORT=8080 \
-    WORKERS=1
+    WORKERS=1 \
+    NVIDIA_VISIBLE_DEVICES=all \
+    NVIDIA_DRIVER_CAPABILITIES=compute,utility
 
 # ---- Startup script (does HF cache warm + launches uvicorn) ----
 COPY --chown=${MAMBA_USER}:${MAMBA_USER} entrypoint.sh /home/${MAMBA_USER}/entrypoint.sh

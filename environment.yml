@@ -4,7 +4,6 @@ channels:
 dependencies:
   - python=3.11
   # Core compute
-  - pytorch=2.6.*           # conda-forge GPU build if your driver is new enough
   # If you prefer the official PyTorch channel instead of conda-forge, use:
   # - pytorch
   # - pytorch-cuda=12.1      # and add the 'pytorch' channel above

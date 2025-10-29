@@ -35,6 +35,14 @@ echo "  PORT                       = ${PORT}"
 echo "  WORKERS                    = ${WORKERS}"
 echo "  MODEL_CHECKPOINT_OVERRIDE  = ${MODEL_CHECKPOINT_OVERRIDE:-<none>}"
 
+# --- check nvidia-smi if available ---
+if command -v nvidia-smi &> /dev/null; then
+  ok "NVIDIA GPU detected:"
+  nvidia-smi
+else
+  warn "NVIDIA GPU not detected. Running on CPU."
+fi
+
 mkdir -p "${HF_HOME}"
 
 # ---------- Verify your custom checkpoint exists ----------
