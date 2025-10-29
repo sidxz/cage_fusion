@@ -79,7 +79,7 @@ def predict(payload: PredictIn):
             input_df=input_df,
             batch_size=bs,
             plot_all_attention=payload.plot_all_attention,
-            attn_plot_dir="/preds/attention_plots",
+            attn_plot_dir="/tmp/attention_plots",
         )
         # return JSON; big results can be CSV-ified on demand
         return {
