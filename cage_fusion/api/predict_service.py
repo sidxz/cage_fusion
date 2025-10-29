@@ -1,18 +1,17 @@
 # cage_fusion/api/predict_service.py
+
 import os
 import base64
-
+import sys
 import torch
 import joblib
 import pandas as pd
 import numpy as np
 from typing import List, Optional
 from transformers import AutoTokenizer, AutoModel
-import sys
 from rich.console import Console
 from rich.traceback import install
-from transformers import AutoTokenizer, AutoModel
-# Add project root to the Python path
+
 project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
 if project_root not in sys.path:
     sys.path.insert(0, project_root)
@@ -30,6 +29,13 @@ import tempfile
 import shutil
 from tqdm import tqdm
 
+from cage_fusion.viz.token_viz import (
+    visualize_top_token_attentions,
+    visualize_total_atom_contribution,
+    visualize_combined_atom_contribution,
+)
+from cage_fusion.viz.prompt_viz import visualize_fg_attention
+
 os.environ.setdefault("TOKENIZERS_PARALLELISM", "false")
 os.environ.setdefault("OMP_NUM_THREADS", "1")
 os.environ.setdefault("MKL_NUM_THREADS", "1")
@@ -43,6 +49,92 @@ def _b64_image(path: str) -> Optional[str]:
         with open(path, "rb") as f:
             return base64.b64encode(f.read()).decode("utf-8")
     return None
+
+
+def _plot_batch_attentions(
+    j,
+    tokenizer,
+    logits,
+    g2t_weights,
+    t2a_weights,
+    input_ids,
+    smiles_batch,
+    prompt_attn_weights,
+    attn_plot_dir,
+    original_idx,
+    weight_fg=None,
+    weight_t2a=None,
+):
+    if g2t_weights is None or t2a_weights is None:
+        return []
+
+    sample_plot_dir = os.path.join(attn_plot_dir, f"idx_{original_idx}")
+    os.makedirs(sample_plot_dir, exist_ok=True)
+
+    smiles_to_plot = smiles_batch[j]
+    token_scores = g2t_weights[j].sum(dim=(0, 1))
+    special_ids = [
+        tokenizer.pad_token_id,
+        tokenizer.cls_token_id,
+        tokenizer.sep_token_id,
+    ]
+    for sid in special_ids:
+        token_scores[input_ids[j] == sid] = -1e9
+
+    top_token_indices = torch.argsort(token_scores, descending=True)[:3]
+    full_ids = input_ids[j].detach().cpu().numpy()
+    actual_ids = full_ids[full_ids != tokenizer.pad_token_id]
+    full_tokens = tokenizer.convert_ids_to_tokens(actual_ids)
+
+    # --- Plots ---
+    visualize_top_token_attentions(
+        smiles=smiles_to_plot,
+        attention_weights=t2a_weights[j],
+        full_token_list=full_tokens,
+        top_token_indices=top_token_indices.detach().cpu().numpy(),
+        output_dir=sample_plot_dir,
+    )
+
+    attn = t2a_weights[j]
+    if attn.ndim == 3:
+        attn = attn.mean(dim=0)
+
+    logit_vec = logits[j].detach().cpu().numpy()
+    task_idx = int(np.argmax(np.abs(logit_vec)))
+    pred_logit = float(logit_vec[task_idx])
+
+    visualize_total_atom_contribution(
+        smiles=smiles_to_plot,
+        t2a_weights_sample=attn,
+        pred_logit=pred_logit,
+        output_path=os.path.join(sample_plot_dir, "atom_total_contrib.png"),
+    )
+
+    if prompt_attn_weights and prompt_attn_weights[j] is not None:
+        visualize_fg_attention(
+            smiles=smiles_to_plot,
+            prompt_attn_weights=prompt_attn_weights[j],
+            output_path=os.path.join(sample_plot_dir, "fg_prompt_attention.png"),
+            title="Functional Group Attention (PROMPT)",
+        )
+        if (weight_fg is not None) and (weight_t2a is not None):
+            visualize_combined_atom_contribution(
+                smiles=smiles_to_plot,
+                t2a_weights_sample=attn,
+                pred_logit=pred_logit,
+                prompt_attn_weights=prompt_attn_weights[j],
+                output_path=os.path.join(sample_plot_dir, "atom_combined_contrib.png"),
+                weight_t2a=float(weight_t2a),
+                weight_fg=float(weight_fg),
+            )
+
+    # Collect top token strings
+    kept = []
+    top_idx_np = set(top_token_indices.detach().cpu().numpy().tolist())
+    for idx, tok in enumerate(full_tokens):
+        if idx in top_idx_np:
+            kept.append(tok)
+    return kept
 
 
 class CAGEFusionPredictor:
@@ -85,9 +177,6 @@ class CAGEFusionPredictor:
 
         # --- Tokenizer & embedding model
         hf_ckpt = self.config["model_checkpoint"]
-        hf_local = os.getenv("HF_RESOLVED_DIR")
-        
-        hf_ckpt = self.config["model_checkpoint"]
         self.tokenizer, self.embedding_model = load_hf_checkpoint(hf_ckpt)
         self.embedding_model = self.embedding_model.to(self.device).eval()
 
@@ -96,7 +185,6 @@ class CAGEFusionPredictor:
         if self.scaler is None or not hasattr(self.scaler, "mean_"):
             raise ValueError("Failed to load a valid, fitted scaler.")
 
-        # Ready flag
         self.ready = True
         logger.info(
             f"CAGEFusionPredictor initialized on {self.device} with tasks={self.tasks}"
@@ -116,11 +204,9 @@ class CAGEFusionPredictor:
                 "'attn_plot_dir' must be provided if 'plot_all_attention' is True."
             )
 
-        # --- Temp feature cache
         temp_features_dir = temp_dir or tempfile.mkdtemp()
         os.makedirs(temp_features_dir, exist_ok=True)
         try:
-            # --- Featurize (no scaler fit; use loaded scaler)
             h5_path, _, _ = featurize_and_save_streaming(
                 df=input_df,
                 name="inference",
@@ -159,6 +245,7 @@ class CAGEFusionPredictor:
             if plot_all_attention and attn_plot_dir:
                 os.makedirs(attn_plot_dir, exist_ok=True)
 
+            all_top_tokens = []
             for batch in tqdm(loader, desc="Predicting", disable=True):
                 if batch is None:
                     continue
@@ -201,42 +288,87 @@ class CAGEFusionPredictor:
                         "SMILES": smiles_batch,
                     }
                 )
-                # class + score columns per task
+
+                # Per-task class/score
                 for i, task in enumerate(self.tasks):
                     batch_df[f"pred_class_{task}"] = (
                         probs[:, i] > self.best_thresholds[i]
                     ).astype(int)
                     batch_df[task] = probs[:, i]
 
+                # Plot attention and collect top_tokens per sample
+                if plot_all_attention and attn_plot_dir:
+                    weight_fg = (
+                        float(self.model.alpha.detach().cpu().item())
+                        if hasattr(self.model, "alpha")
+                        else None
+                    )
+                    weight_t2a = (
+                        float(self.model.scale_graph.detach().cpu().item())
+                        if hasattr(self.model, "scale_graph")
+                        else None
+                    )
+                    batch_top_tokens = []
+                    for j in range(len(smiles_batch)):
+                        original_idx = int(original_indices_batch[j].item())
+                        kept_tokens = _plot_batch_attentions(
+                            j=j,
+                            tokenizer=self.tokenizer,
+                            logits=logits,
+                            g2t_weights=g2t_weights,
+                            t2a_weights=t2a_weights,
+                            input_ids=input_ids,
+                            smiles_batch=smiles_batch,
+                            prompt_attn_weights=prompt_attn_weights,
+                            attn_plot_dir=attn_plot_dir,
+                            original_idx=original_idx,
+                            weight_fg=weight_fg,
+                            weight_t2a=weight_t2a,
+                        )
+                        batch_top_tokens.append(
+                            "|".join(kept_tokens) if kept_tokens else ""
+                        )
+                    batch_df["top_tokens"] = batch_top_tokens
+                else:
+                    batch_df["top_tokens"] = [""] * len(smiles_batch)
+
                 cols = (
                     ["Original Index", "Id", "SMILES"]
                     + [f"pred_class_{t}" for t in self.tasks]
                     + list(self.tasks)
+                    + ["top_tokens"]
                 )
                 predictions_df = pd.concat(
                     [predictions_df, batch_df[cols]], ignore_index=True
                 )
-                
-                if plot_all_attention and attn_plot_dir:
-                    # Initialize new columns
-                    predictions_df["atom_total_contrib_base64"] = ""
-                    predictions_df["overall_contrib_base64"] = ""
-                    predictions_df["prompt_atn_image_base64"] = ""
-                    predictions_df["attention_summary_image_base64"] = ""  # alias
 
-                    for i, row in predictions_df.iterrows():
-                        idx = int(row["Original Index"])
-                        sample_dir = os.path.join(attn_plot_dir, f"idx_{idx}")
+            # After all batches: attach base64-encoded images
+            if plot_all_attention and attn_plot_dir:
+                predictions_df["atom_total_contrib_base64"] = ""
+                predictions_df["overall_contrib_base64"] = ""
+                predictions_df["prompt_atn_image_base64"] = ""
+                predictions_df["attention_summary_image_base64"] = ""
 
-                        atom_total = _b64_image(os.path.join(sample_dir, "atom_total_contrib.png"))
-                        combined = _b64_image(os.path.join(sample_dir, "atom_combined_contrib.png"))
-                        prompt_attn = _b64_image(os.path.join(sample_dir, "fg_prompt_attention.png"))
+                for i, row in predictions_df.iterrows():
+                    idx = int(row["Original Index"])
+                    sample_dir = os.path.join(attn_plot_dir, f"idx_{idx}")
 
-                        predictions_df.at[i, "atom_total_contrib_base64"] = atom_total or ""
-                        predictions_df.at[i, "overall_contrib_base64"] = combined or ""
-                        predictions_df.at[i, "prompt_atn_image_base64"] = prompt_attn or ""
-                        predictions_df.at[i, "attention_summary_image_base64"] = combined or ""
+                    atom_total = _b64_image(
+                        os.path.join(sample_dir, "atom_total_contrib.png")
+                    )
+                    combined = _b64_image(
+                        os.path.join(sample_dir, "atom_combined_contrib.png")
+                    )
+                    prompt_attn = _b64_image(
+                        os.path.join(sample_dir, "fg_prompt_attention.png")
+                    )
 
+                    predictions_df.at[i, "atom_total_contrib_base64"] = atom_total or ""
+                    predictions_df.at[i, "overall_contrib_base64"] = combined or ""
+                    predictions_df.at[i, "prompt_atn_image_base64"] = prompt_attn or ""
+                    predictions_df.at[i, "attention_summary_image_base64"] = (
+                        combined or ""
+                    )
 
             return predictions_df
         finally:
