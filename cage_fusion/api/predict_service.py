@@ -1,5 +1,6 @@
 # cage_fusion/api/predict_service.py
 import os
+
 import torch
 import joblib
 import pandas as pd
@@ -9,7 +10,7 @@ from transformers import AutoTokenizer, AutoModel
 import sys
 from rich.console import Console
 from rich.traceback import install
-
+from transformers import AutoTokenizer, AutoModel
 # Add project root to the Python path
 project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
 if project_root not in sys.path:
@@ -21,6 +22,7 @@ from cage_fusion.engine.data_utils import collate_fn_for_cage_fusion
 from cage_fusion.engine.utils import move_bmg_to_device
 from cage_fusion.featurizers import featurize_and_save_streaming
 from cage_fusion.utils.logging_utils import logger
+from cage_fusion.utils.hf_loader import load_hf_checkpoint
 
 from functools import partial
 import tempfile
@@ -33,6 +35,23 @@ os.environ.setdefault("MKL_NUM_THREADS", "1")
 
 install()
 console = Console()
+
+
+def _load_hf_artifacts(hf_id: str):
+    """
+    Prefer a pre-downloaded local snapshot (HF_RESOLVED_DIR) when present;
+    fall back to online repo id otherwise.
+    """
+    local_dir = os.getenv("HF_RESOLVED_DIR")
+    if local_dir and os.path.isdir(local_dir):
+        kw = dict(local_files_only=True)
+        src = local_dir
+    else:
+        kw = {}
+        src = hf_id
+    tok = AutoTokenizer.from_pretrained(src, **kw)
+    emb = AutoModel.from_pretrained(src, **kw)
+    return tok, emb
 
 
 class CAGEFusionPredictor:
@@ -75,9 +94,11 @@ class CAGEFusionPredictor:
 
         # --- Tokenizer & embedding model
         hf_ckpt = self.config["model_checkpoint"]
-
-        self.tokenizer = AutoTokenizer.from_pretrained(hf_ckpt)
-        self.embedding_model = AutoModel.from_pretrained(hf_ckpt).to(self.device).eval()
+        hf_local = os.getenv("HF_RESOLVED_DIR")
+        
+        hf_ckpt = self.config["model_checkpoint"]
+        self.tokenizer, self.embedding_model = load_hf_checkpoint(hf_ckpt)
+        self.embedding_model = self.embedding_model.to(self.device).eval()
 
         # --- Scaler
         self.scaler = joblib.load(scaler_path)

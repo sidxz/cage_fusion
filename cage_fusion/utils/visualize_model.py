@@ -9,6 +9,7 @@ the resulting computational graph to render a diagram of the model's structure.
 
 import os
 import sys
+
 import torch
 import argparse
 import numpy as np
@@ -32,6 +33,7 @@ from cage_fusion.engine.dataset import CageFusionStreamingDataset
 from cage_fusion.engine.data_utils import collate_fn_for_cage_fusion
 # FIX: Import and use the project's own utility for moving graph to device
 from cage_fusion.engine.utils import move_bmg_to_device
+from cage_fusion.utils.hf_loader import load_tokenizer
 
 # Try to import torchviz, and provide a helpful error message if it's not installed.
 try:
@@ -66,7 +68,7 @@ def visualize_model_architecture(output_path="model_architecture"):
     # --- 2. Generate a valid batch using the project's data pipeline ---
     console.log("[bold blue]Using existing pipeline to generate valid dummy data...[/bold blue]")
     
-    tokenizer = AutoTokenizer.from_pretrained(config["model_checkpoint"])
+    tokenizer = load_tokenizer(config["model_checkpoint"])
     embedding_model = AutoModel.from_pretrained(config["model_checkpoint"]).to(device).eval()
 
     dummy_scaler = StandardScaler()
