@@ -1,5 +1,6 @@
 # cage_fusion/api/predict_service.py
 import os
+import base64
 
 import torch
 import joblib
@@ -37,21 +38,11 @@ install()
 console = Console()
 
 
-def _load_hf_artifacts(hf_id: str):
-    """
-    Prefer a pre-downloaded local snapshot (HF_RESOLVED_DIR) when present;
-    fall back to online repo id otherwise.
-    """
-    local_dir = os.getenv("HF_RESOLVED_DIR")
-    if local_dir and os.path.isdir(local_dir):
-        kw = dict(local_files_only=True)
-        src = local_dir
-    else:
-        kw = {}
-        src = hf_id
-    tok = AutoTokenizer.from_pretrained(src, **kw)
-    emb = AutoModel.from_pretrained(src, **kw)
-    return tok, emb
+def _b64_image(path: str) -> Optional[str]:
+    if path and os.path.exists(path):
+        with open(path, "rb") as f:
+            return base64.b64encode(f.read()).decode("utf-8")
+    return None
 
 
 class CAGEFusionPredictor:
@@ -225,6 +216,27 @@ class CAGEFusionPredictor:
                 predictions_df = pd.concat(
                     [predictions_df, batch_df[cols]], ignore_index=True
                 )
+                
+                if plot_all_attention and attn_plot_dir:
+                    # Initialize new columns
+                    predictions_df["atom_total_contrib_base64"] = ""
+                    predictions_df["overall_contrib_base64"] = ""
+                    predictions_df["prompt_atn_image_base64"] = ""
+                    predictions_df["attention_summary_image_base64"] = ""  # alias
+
+                    for i, row in predictions_df.iterrows():
+                        idx = int(row["Original Index"])
+                        sample_dir = os.path.join(attn_plot_dir, f"idx_{idx}")
+
+                        atom_total = _b64_image(os.path.join(sample_dir, "atom_total_contrib.png"))
+                        combined = _b64_image(os.path.join(sample_dir, "atom_combined_contrib.png"))
+                        prompt_attn = _b64_image(os.path.join(sample_dir, "fg_prompt_attention.png"))
+
+                        predictions_df.at[i, "atom_total_contrib_base64"] = atom_total or ""
+                        predictions_df.at[i, "overall_contrib_base64"] = combined or ""
+                        predictions_df.at[i, "prompt_atn_image_base64"] = prompt_attn or ""
+                        predictions_df.at[i, "attention_summary_image_base64"] = combined or ""
+
 
             return predictions_df
         finally:

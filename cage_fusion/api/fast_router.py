@@ -38,7 +38,6 @@ class ItemIn(BaseModel):
 class PredictIn(BaseModel):
     items: List[ItemIn]
     plot_all_attention: bool = False
-    attn_plot_dir: Optional[str] = None
     batch_size: Optional[int] = None
 
 
@@ -61,6 +60,7 @@ def health():
         "model_file": MODEL_FILE,
         "tasks": predictor.tasks,
         "device": str(predictor.device),
+        "version": "1.0.1",
     }
 
 
@@ -79,7 +79,7 @@ def predict(payload: PredictIn):
             input_df=input_df,
             batch_size=bs,
             plot_all_attention=payload.plot_all_attention,
-            attn_plot_dir=payload.attn_plot_dir,
+            attn_plot_dir="/preds/attention_plots",
         )
         # return JSON; big results can be CSV-ified on demand
         return {
