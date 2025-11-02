@@ -1,0 +1,33 @@
+image: docker:latest
+
+services:
+  - docker:dind
+
+variables:
+  DOCKER_DRIVER: overlay2
+  IMAGE_TAG: "$CI_REGISTRY/sid/cage_fusion:$CI_COMMIT_REF_NAME"
+
+before_script:
+  - docker info
+  - docker login -u "$CI_REGISTRY_USER" -p "$CI_REGISTRY_PASSWORD" "$CI_REGISTRY"
+
+stages:
+  - build
+  - push
+
+build:
+  stage: build
+  script:
+    # Build the Docker image
+    - docker build -t $IMAGE_TAG .
+  only:
+    - main
+
+push:
+  stage: push
+  script:
+    - docker info
+    - docker login -u "$CI_REGISTRY_USER" -p "$CI_REGISTRY_PASSWORD" "$CI_REGISTRY"
+    - docker push $IMAGE_TAG
+  only:
+    - main
