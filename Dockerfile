@@ -33,7 +33,7 @@ ENV CHECKPOINT_DIR=/checkpoints/nuisance-pred \
     HF_HOME=/home/${MAMBA_USER}/.cache/huggingface \
     HF_HUB_CACHE=/home/${MAMBA_USER}/.cache/huggingface/hub \
     HF_HUB_ENABLE_HF_TRANSFER=1 \
-    PORT=8080 \
+    PORT=10002 \
     WORKERS=1 \
     NVIDIA_VISIBLE_DEVICES=all \
     NVIDIA_DRIVER_CAPABILITIES=compute,utility
@@ -42,7 +42,7 @@ ENV CHECKPOINT_DIR=/checkpoints/nuisance-pred \
 COPY --chown=${MAMBA_USER}:${MAMBA_USER} entrypoint.sh /home/${MAMBA_USER}/entrypoint.sh
 RUN chmod +x /home/${MAMBA_USER}/entrypoint.sh
 
-EXPOSE 8080
+EXPOSE 10002
 
 # Use the startup script (auto-activates env via micromamba run)
 ENTRYPOINT ["/home/mamba/entrypoint.sh"]
