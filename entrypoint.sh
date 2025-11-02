@@ -14,7 +14,7 @@ err() { log "${RED}" "$1"; }
 : "${MODEL_NAME:=Cross-Prompt-Phased-bert-251020}"
 : "${MODEL_FILE:=latest_checkpoint.pt}"
 : "${HF_HOME:=/home/mamba/.cache/huggingface}"
-: "${PORT:=8080}"
+: "${PORT:=10002}"
 : "${WORKERS:=1}"
 : "${MODEL_CHECKPOINT_OVERRIDE:=}"              # e.g., "DeepChem/ChemBERTa-77M-MTR"
 : "${HF_ENDPOINT:=https://huggingface.co}"

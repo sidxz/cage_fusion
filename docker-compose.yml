@@ -1,0 +1,20 @@
+services:
+  cage_fusion_nuisance_api:
+    build: .
+    volumes:
+      - ./checkpoints:/checkpoints
+    ports:
+      - "10002:10002"
+    environment:
+      CHECKPOINT_DIR: /checkpoints/nuisance-pred
+      MODEL_NAME: Cross-Prompt-Phased-bert-251020
+      MODEL_FILE: latest_checkpoint.pt
+      BATCH_SIZE: "24"
+
+    networks:
+      - daikon-be-net
+
+networks:
+  daikon-be-net:
+    external: true
+    name: daikon-be-net
