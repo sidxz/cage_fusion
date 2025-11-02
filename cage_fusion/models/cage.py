@@ -1,4 +1,5 @@
 import os
+
 import torch
 import torch.nn as nn
 from transformers import AutoTokenizer
@@ -10,6 +11,7 @@ from torch.nn.utils.rnn import pad_sequence
 from cage_fusion.utils.logging_utils import logger
 from cage_fusion.models.fg_prompt_addon import FunctionalGroupPrompt
 from cage_fusion.engine.fg_utils import NUM_FUNCTIONAL_GROUPS
+from cage_fusion.utils.hf_loader import load_hf_checkpoint, load_tokenizer
 import json
 
 
@@ -52,7 +54,8 @@ class CAGEFusionModel(nn.Module):
         )  # cross | self_tokens | self_graph | self_both
         logger.info(f"[]Attention mode set to: {self.attn_mode}")
 
-        tokenizer = AutoTokenizer.from_pretrained(config["model_checkpoint"])
+        #tokenizer = AutoTokenizer.from_pretrained(config["model_checkpoint"])
+        tokenizer = load_tokenizer(config["model_checkpoint"])
         self.register_buffer(
             "PAD_TOKEN_ID", torch.tensor(tokenizer.pad_token_id, dtype=torch.long)
         )

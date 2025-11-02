@@ -47,7 +47,7 @@ if not FG_SMARTS:
 FG_NAMES = list(FG_SMARTS.keys())
 NUM_FUNCTIONAL_GROUPS = len(FG_NAMES)
 
-print(f"✅ Loaded {NUM_FUNCTIONAL_GROUPS} valid functional groups from {fg_path.name}")
+#print(f"✅ Loaded {NUM_FUNCTIONAL_GROUPS} valid functional groups from {fg_path.name}")
 
 
 # --- FG Matcher Function ---
