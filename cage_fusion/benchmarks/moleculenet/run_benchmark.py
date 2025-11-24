@@ -55,24 +55,34 @@ console = Console()
 USE_CO_ATTENTION = True
 ATTN_MODE = "cross"  # 'cross' | 'self_tokens' | 'self_graph' | 'self_both'
 USE_AUX_FEATURES = True
-USE_FG_PROMPT = True
+USE_FG_PROMPT = False
 EMBEDDING_MODEL = "bert"
 CO_ATTENTION_LAYERS = 1
 
 DEFAULT_DATASET = "bace_classification"
-DEFAULT_SEED = 54
+#DEFAULT_SEED = 54
+#DEFAULT_SEED = 45
+#DEFAULT_SEED = 3
+DEFAULT_SEED = 30
+#DEFAULT_SEED = 1
 DEFAULT_FORCE_RERUN = False
 DEFAULT_RERUN_TRAIN = False
 DEFAULT_SPLITTER = "scaffold"
 
 # Single-phase knobs
 DEFAULT_BATCH_SIZE = 256
-DEFAULT_LR = 0.005
-DEFAULT_NUM_EPOCHS = 35
-DEFAULT_WARMUP_FRACTION = 0.1  # fraction of total steps
+DEFAULT_LR = 1*3e-4
+DEFAULT_NUM_EPOCHS = 50
+DEFAULT_WARMUP_FRACTION = 0.09  # fraction of total steps
+
+# === Scaled Attention Factor ===
+SCALED_GRAPH_FACTOR = 1.0  # Scaling factor for attention scores
+SCALE_ATTN_FACTOR = 0.1  # Scaling factor for attention scores
+SCALE_AUX_FACTOR = 0.1  # Scaling factor for auxiliary features
+SCALED_FG_FACTOR = 0.2  # Scaling factor for functional group prompts
 
 DIRNAME = (
-    f"Benchmark-{DEFAULT_DATASET}-{CO_ATTENTION_LAYERS}-{EMBEDDING_MODEL}-v4"
+    f"Benchmark-v4"
 )
 DATA_ROOT = "data"
 DATA_DIR = os.path.join(DATA_ROOT, "molnet")
@@ -268,12 +278,30 @@ def run_final_evaluation(
             y_true, y_pred, title=f"Confusion Matrix - {task_name}", save_path=save_path
         )
     logger.info(f"Saved confusion matrices to {cm_dir}")
-
+    
+    # Also save overall metrics to a JSON
+    metrics_path = os.path.join(output_dir, f"test_metrics_{title.lower().replace(' ', '_')}.json")
+    overall_metrics = {
+        "test_loss": test_loss,
+        "test_mcc": test_mcc,
+        "test_auc": test_auc,
+        "test_pr": test_pr,
+        "per_task_metrics": {
+            config["tasks"][i]: {
+                "mcc": mcc, "roc_auc": auc, "pr_auc": pr
+            } for i, (mcc, auc, pr) in enumerate(per_task_metrics)
+        }
+    }
+    with open(metrics_path, "w") as f:
+        json.dump(overall_metrics, f, indent=2)
+    logger.info(f"Saved overall test metrics to {metrics_path}")
+    
 
 # ========= Main pipeline =========
 def run_benchmark(dataset_name, seed, force_rerun, rerun_train, splitter):
     # Build run-scoped paths (match phased script layout)
-    run_id = f"{dataset_name}_seed{seed}"
+    run_id = f"{dataset_name}"
+    run_id = os.path.join(run_id, str(seed))
     base_cache_dir = os.path.join(CACHE_ROOT, run_id)
     features_dir = os.path.join(FEATURES_ROOT, run_id)
     checkpoints_dir = os.path.join(CHECKPOINTS_ROOT, run_id)
@@ -298,6 +326,10 @@ def run_benchmark(dataset_name, seed, force_rerun, rerun_train, splitter):
             batch_size=DEFAULT_BATCH_SIZE,
             num_epochs=DEFAULT_NUM_EPOCHS,
             warmup_fraction=DEFAULT_WARMUP_FRACTION,
+            scaled_graph_factor=SCALED_GRAPH_FACTOR,
+            scale_attn_factor=SCALE_ATTN_FACTOR,
+            scale_aux_factor=SCALE_AUX_FACTOR,
+            scaled_fg_factor=SCALED_FG_FACTOR,
         )
     )
 
@@ -305,7 +337,15 @@ def run_benchmark(dataset_name, seed, force_rerun, rerun_train, splitter):
         f"[bold cyan]MoleculeNet Benchmark (Single-Phase): {dataset_name} | Seed={seed} | Splitter={splitter} | "
         f"ForceRerun={force_rerun} | RerunTrain={rerun_train}"
     )
+    console.print(f"run_id: {run_id}")
+    console.print(f"base_cache_dir: {base_cache_dir}")
+    console.print(f"features_dir: {features_dir}")
+    console.print(f"checkpoints_dir: {checkpoints_dir}")
+    console.print(f"output_dir: {output_dir}")
+    console.print(f"data_dir: {data_dir}")
     set_seed(seed)
+    
+    # return  # TEMPORARY EXIT FOR TESTING
 
     # Clear paths if requested
     if force_rerun:
