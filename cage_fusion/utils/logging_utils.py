@@ -4,7 +4,10 @@ from rich.logging import RichHandler
 from loguru import logger as loguru_logger
 
 # Ensure the logs directory exists
-os.makedirs("logs", exist_ok=True)
+LOG_DIR = os.getenv("CAGE_FUSION_LOG_DIR", "/logs")
+os.makedirs(LOG_DIR, exist_ok=True)
+ 
+LOG_FILE = os.path.join(LOG_DIR, "cage_fusion.log")
 
 # === 1. RichHandler for console ===
 logging.basicConfig(
@@ -21,7 +24,7 @@ loguru_logger.remove()  # Remove default Loguru handlers
 
 # Log to file with rotation
 loguru_logger.add(
-    "logs/cagefusion.log",
+    LOG_FILE,
     rotation="10 MB",
     level="DEBUG",
     format="{time:YYYY-MM-DD HH:mm:ss} | {level} | {message}",
