@@ -7,7 +7,7 @@ from loguru import logger as loguru_logger
 LOG_DIR = os.getenv("CAGE_FUSION_LOG_DIR", "/logs")
 os.makedirs(LOG_DIR, exist_ok=True)
  
-LOG_FILE = os.path.join(LOG_DIR, "cage_fusion.log")
+LOG_FILE = os.path.join(LOG_DIR, "cagefusion.log")
 
 # === 1. RichHandler for console ===
 logging.basicConfig(
