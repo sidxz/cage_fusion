@@ -35,7 +35,9 @@ services:
       - "10002:10002"
     environment:
       CHECKPOINT_DIR: /checkpoints/nuisance-pred
-      MODEL_NAME: Cross-Prompt-Phased-bert-251020
+      CAGE_FUSION_LOG_DIR: /logs
+      PRED_RES_ROOT_DIR: /pred_results
+      MODEL_NAME: DeepChem-ChemBERTa-77M-MTR-CoAttn-1-cross-aux-fgprompt
       MODEL_FILE: latest_checkpoint.pt
       BATCH_SIZE: "24"
     networks:
