@@ -31,6 +31,8 @@ services:
     build: .
     volumes:
       - ./checkpoints:/checkpoints
+      - ./logs:/logs
+      - ./pred_results:/pred_results
     ports:
       - "10002:10002"
     environment:
