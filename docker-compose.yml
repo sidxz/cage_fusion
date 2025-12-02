@@ -11,7 +11,7 @@ services:
       CHECKPOINT_DIR: /checkpoints/nuisance-pred
       CAGE_FUSION_LOG_DIR: /logs
       PRED_RES_ROOT_DIR: /pred_results
-      MODEL_NAME: Cross-Prompt-Phased-bert-251020
+      MODEL_NAME: DeepChem-ChemBERTa-77M-MTR-CoAttn-1-cross-aux-fgprompt
       MODEL_FILE: latest_checkpoint.pt
       BATCH_SIZE: "24"
 
