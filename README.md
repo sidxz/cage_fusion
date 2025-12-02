@@ -81,7 +81,7 @@ The container uses a startup script that:
 | Variable | Description | Default |
 |-----------|-------------|----------|
 | `CHECKPOINT_DIR` | Path to model checkpoint directory | `/checkpoints/nuisance-pred` |
-| `MODEL_NAME` | Name of the checkpoint subdirectory | `Cross-Prompt-Phased-bert-251020` |
+| `MODEL_NAME` | Name of the checkpoint subdirectory | `DeepChem-ChemBERTa-77M-MTR-CoAttn-1-cross-aux-fgprompt` |
 | `MODEL_FILE` | Model checkpoint filename | `latest_checkpoint.pt` |
 | `PORT` | API port | `10002` |
 | `WORKERS` | Number of Uvicorn workers | `1` |
