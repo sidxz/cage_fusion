@@ -4,7 +4,7 @@ services:
     volumes:
       - ./checkpoints:/checkpoints
       - ./logs:/logs
-      - ./pred_results:/pred_results
+      - ./pred-results:/pred-results
     ports:
       - "10002:10002"
     environment:
