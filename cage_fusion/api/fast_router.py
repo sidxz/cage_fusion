@@ -15,6 +15,10 @@ BATCH_SIZE = int(os.getenv("BATCH_SIZE", "256"))
 
 CHECKPOINT_DIR = os.path.join(CHECKPOINT_BASE_DIR, MODEL_NAME)
 API_CONTROLLER_NAME = os.getenv("API_CONTROLLER_NAME", "cage-fusion-api")
+PRED_RES_ROOT_DIR = os.getenv("PRED_RES_ROOT_DIR", "/pred_results")
+PRED_RES_DIR = os.path.join(PRED_RES_ROOT_DIR, MODEL_NAME)
+
+os.makedirs(PRED_RES_DIR, exist_ok=True)
 
 app = FastAPI(title=f"CAGE-Fusion {API_CONTROLLER_NAME}", version="1.0.0")
 
@@ -79,7 +83,7 @@ def predict(payload: PredictIn):
             input_df=input_df,
             batch_size=bs,
             plot_all_attention=payload.plot_all_attention,
-            attn_plot_dir="/tmp/attention_plots",
+            attn_plot_dir=PRED_RES_DIR,
         )
         # return JSON; big results can be CSV-ified on demand
         return {

@@ -3,10 +3,14 @@ services:
     build: .
     volumes:
       - ./checkpoints:/checkpoints
+      - ./logs:/logs
+      - ./pred_results:/pred_results
     ports:
       - "10002:10002"
     environment:
       CHECKPOINT_DIR: /checkpoints/nuisance-pred
+      CAGE_FUSION_LOG_DIR: /logs
+      PRED_RES_ROOT_DIR: /pred_results
       MODEL_NAME: Cross-Prompt-Phased-bert-251020
       MODEL_FILE: latest_checkpoint.pt
       BATCH_SIZE: "24"
