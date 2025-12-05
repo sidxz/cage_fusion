@@ -1,0 +1,35 @@
+FROM pytorch/pytorch:2.6.0-cuda12.4-cudnn9-runtime
+
+ARG MAMBA_USER=mamba
+SHELL ["/bin/bash", "-o", "pipefail", "-c"]
+
+RUN apt-get update && apt-get install -y curl ca-certificates bzip2 && rm -rf /var/lib/apt/lists/*
+RUN useradd -m ${MAMBA_USER}
+USER ${MAMBA_USER}
+WORKDIR /home/${MAMBA_USER}
+
+# micromamba
+RUN curl -L https://micro.mamba.pm/api/micromamba/linux-64/latest | tar -xvj bin/micromamba
+
+ENV MAMBA_ROOT_PREFIX=/home/${MAMBA_USER}/mamba
+ENV PATH=/home/${MAMBA_USER}/bin:$PATH
+ENV MAMBA_DOCKERFILE_ACTIVATE=1
+
+# Build deps layer (rebuilds only if env changes)
+COPY --chown=${MAMBA_USER}:${MAMBA_USER} environment.yml /home/${MAMBA_USER}/environment.yml
+RUN ./bin/micromamba create -y -n cage-fusion -f environment.yml
+
+# copy entrypoint (dev-aware)
+COPY --chown=${MAMBA_USER}:${MAMBA_USER} entrypoint.sh /home/${MAMBA_USER}/entrypoint.sh
+RUN chmod +x /home/${MAMBA_USER}/entrypoint.sh
+
+# runtime dirs (also mounted)
+#RUN mkdir -p /checkpoints /logs /pred-results
+
+ENV HF_HOME=/home/${MAMBA_USER}/.cache/huggingface \
+    HF_HUB_CACHE=/home/${MAMBA_USER}/.cache/huggingface/hub \
+    PYTHONUNBUFFERED=1 \
+    PYTHONPATH=/home/${MAMBA_USER}
+
+EXPOSE 10002
+ENTRYPOINT ["/home/mamba/entrypoint.sh"]

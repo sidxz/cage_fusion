@@ -207,7 +207,7 @@ def _prepare_plot_data_coeff(mol, attention_coeffs, top_atom_indices, attention_
     )
     if max_abs_coeff < 1e-8:
         max_abs_coeff = 1.0
-        
+
     norm = mcolors.Normalize(vmin=-max_abs_coeff, vmax=max_abs_coeff)
 
     # Color only the most influential atoms for clarity
@@ -457,16 +457,19 @@ def minmax_neg1_1(x):
 
 def visualize_total_atom_contribution(
     smiles,
-    t2a_weights_sample,  # shape: [n_tokens, n_atoms] (numpy, or torch.cpu().numpy())
+    t2a_weights_sample,  # shape: [n_tokens, n_atoms]
     pred_logit,  # model output scalar, for sign
     output_path="atom_total_contrib.png",
     top_n=None,  # If None, show all; else, show top N pos and N neg atoms
+    highlight_red=True,  # highlight positive atoms
+    highlight_blue=False,  # highlight negative atoms
 ):
     """
     Visualize total per-atom contributions by summing over all tokens.
     - Red: atom contributed positively (toward prediction)
     - Blue: atom contributed negatively (against prediction)
     If top_n is set, only the N most positive and N most negative atoms are shown.
+    You can toggle red/blue highlighting using highlight_red / highlight_blue.
     """
     mol = Chem.MolFromSmiles(smiles)
     if mol is None:
@@ -479,72 +482,67 @@ def visualize_total_atom_contribution(
         print("No atoms in molecule.")
         return
 
-    # 1. Aggregate all tokens
-    if hasattr(t2a_weights_sample, "cpu"):
-        attn = t2a_weights_sample.cpu().numpy()
-    else:
-        attn = t2a_weights_sample
-    atom_scores = attn.sum(axis=0)  # [n_atoms]
+    # Aggregate token → atom weights
+    attn = (
+        t2a_weights_sample.cpu().numpy()
+        if hasattr(t2a_weights_sample, "cpu")
+        else t2a_weights_sample
+    )
+    atom_scores = attn.sum(axis=0)
     atom_scores -= atom_scores.mean()
+
     sign = 1 if pred_logit > 0 else -1
     atom_contribs = sign * atom_scores
-    vmax = np.abs(atom_contribs).max() if n_atoms > 0 else 1.0
     norm = minmax_neg1_1(atom_contribs)
     cmap = cm.get_cmap("bwr")
+
+    n_top = min(top_n or n_atoms, n_atoms)
+    pos_atoms = np.argsort(-atom_contribs)[:n_top] if highlight_red else []
+    neg_atoms = np.argsort(atom_contribs)[:n_top] if highlight_blue else []
+
+    highlight_atoms = (
+        list(set(map(int, np.concatenate([pos_atoms, neg_atoms]))))
+        if top_n
+        else list(range(n_atoms))
+    )
     atom_colors = {}
 
-    # Make sure top_n does not exceed n_atoms
-    n_top = min(top_n or n_atoms, n_atoms)
-
-    # Select top_n positive and top_n negative atoms if requested
-    if top_n is not None and top_n > 0:
-        pos_atoms = np.argsort(-atom_contribs)[:n_top]  # N most positive
-        neg_atoms = np.argsort(atom_contribs)[:n_top]  # N most negative
-        highlight_atoms = list(
-            set(int(i) for i in np.concatenate([pos_atoms, neg_atoms]))
-        )
-    else:
-        highlight_atoms = list(range(n_atoms))
-
-    # Only color those atoms (ensure Python int and in range)
     for i in highlight_atoms:
-        idx = int(i)
-        if 0 <= idx < n_atoms:
-            atom_colors[idx] = cmap(0.5 + 0.5 * norm[idx])[:3]
+        val = norm[i]
+        if atom_contribs[i] > 0 and highlight_red:
+            atom_colors[i] = cmap(0.5 + 0.5 * val)[:3]  # red side
+        elif atom_contribs[i] < 0 and highlight_blue:
+            atom_colors[i] = cmap(0.5 + 0.5 * val)[:3]  # blue side
 
-    # --- Bond coloring: only for bonds between highlighted atoms ---
+    # Bonds between highlighted atoms
     highlight_bonds = [
-        int(b.GetIdx())
+        b.GetIdx()
         for b in mol.GetBonds()
-        if int(b.GetBeginAtomIdx()) in highlight_atoms
-        and int(b.GetEndAtomIdx()) in highlight_atoms
+        if b.GetBeginAtomIdx() in atom_colors and b.GetEndAtomIdx() in atom_colors
     ]
-    bond_colors = {}
-    for bond_idx in highlight_bonds:
-        begin_idx = int(mol.GetBondWithIdx(bond_idx).GetBeginAtomIdx())
-        end_idx = int(mol.GetBondWithIdx(bond_idx).GetEndAtomIdx())
-        c1 = atom_colors.get(begin_idx, (1, 1, 1))
-        c2 = atom_colors.get(end_idx, (1, 1, 1))
-        bond_colors[bond_idx] = tuple(np.mean([c1, c2], axis=0))
-
-    # Ensure indices are all Python ints and in-bounds
-    highlight_atoms = [int(i) for i in highlight_atoms if 0 <= int(i) < n_atoms]
-    atom_colors = {int(i): c for i, c in atom_colors.items() if 0 <= int(i) < n_atoms}
-    highlight_bonds = [int(i) for i in highlight_bonds if 0 <= int(i) < n_bonds]
-    bond_colors = {int(i): c for i, c in bond_colors.items() if 0 <= int(i) < n_bonds}
+    bond_colors = {
+        b_idx: tuple(
+            np.mean(
+                [atom_colors[b.GetBeginAtomIdx()], atom_colors[b.GetEndAtomIdx()]],
+                axis=0,
+            )
+        )
+        for b_idx, b in [(b.GetIdx(), b) for b in mol.GetBonds()]
+        if b.GetBeginAtomIdx() in atom_colors and b.GetEndAtomIdx() in atom_colors
+    }
 
     drawer = rdMolDraw2D.MolDraw2DCairo(800, 600)
     drawer.drawOptions().addAtomIndices = True
     rdMolDraw2D.PrepareAndDrawMolecule(
         drawer,
         mol,
-        highlightAtoms=highlight_atoms,
+        highlightAtoms=list(atom_colors.keys()),
         highlightAtomColors=atom_colors,
         highlightBonds=highlight_bonds,
         highlightBondColors=bond_colors,
     )
     drawer.FinishDrawing()
-    os.makedirs(os.path.dirname(output_path), exist_ok=True)
+    os.makedirs(os.path.dirname(output_path) or ".", exist_ok=True)
     with open(output_path, "wb") as f:
         f.write(drawer.GetDrawingText())
 
@@ -557,13 +555,10 @@ def visualize_combined_atom_contribution(
     output_path="atom_combined_contrib.png",
     weight_t2a=1.0,
     weight_fg=1.0,
-    top_n=None,  # highlight top N positive/negative if wanted
+    top_n=None,  # highlight top N per polarity if set
+    highlight_red=True,  # toggle positive contributions
+    highlight_blue=False,  # toggle negative contributions
 ):
-    print(f"weight_t2a: {weight_t2a}, weight_fg: {weight_fg}")
-    # print("="*10, "ENTER visualize_combined_atom_contribution", "="*10)
-    # print(f"SMILES: {smiles}")
-    # print(f"t2a_weights_sample type: {type(t2a_weights_sample)}")
-    # print(f"t2a_weights_sample.shape: {getattr(t2a_weights_sample, 'shape', 'N/A')}")
     from ..engine.fg_utils import FG_NAMES, FG_SMARTS
 
     mol = Chem.MolFromSmiles(smiles)
@@ -572,112 +567,107 @@ def visualize_combined_atom_contribution(
         return
 
     n_atoms = mol.GetNumAtoms()
-    # print(f"Num atoms in molecule: {n_atoms}")
 
-    # --- 1. Model contribution: as before ---
-    if hasattr(t2a_weights_sample, "cpu"):
-        attn = t2a_weights_sample.cpu().numpy()
-    else:
-        attn = t2a_weights_sample
-    # print(f"attn.shape after cpu().numpy(): {attn.shape}")
-    # if attn.shape[-1] != n_atoms:
-    #     print(f"WARNING: attn.shape[-1] = {attn.shape[-1]} does not match n_atoms = {n_atoms}")
-    #     print(f"Trimming model_atom_scores from {attn.shape[-1]} to {n_atoms}")
-    model_atom_scores = attn.sum(axis=0)  # [n_atoms_padded]
+    # --- 1) Model (token->atom) contribution ---
+    attn = (
+        t2a_weights_sample.cpu().numpy()
+        if hasattr(t2a_weights_sample, "cpu")
+        else t2a_weights_sample
+    )
+    model_atom_scores = attn.sum(axis=0)
     model_atom_scores -= model_atom_scores.mean()
     sign = 1 if pred_logit > 0 else -1
-    model_atom_contribs = sign * model_atom_scores
+    model_atom_contribs = (sign * model_atom_scores)[:n_atoms]
 
-    # PATCH: trim to only real atoms
-    model_atom_contribs = model_atom_contribs[:n_atoms]
-    # print(f"model_atom_contribs.shape after trim: {model_atom_contribs.shape}")
-
-    # --- 2. FG prompt per-atom contribution ---
-    fg_atom_contribs = np.zeros(n_atoms)
+    # --- 2) Functional-group prompt per-atom contribution ---
+    fg_atom_contribs = np.zeros(n_atoms, dtype=float)
     fg_ids = prompt_attn_weights.get("fg_ids", [])
     weights = np.array(prompt_attn_weights.get("weights", []))
-    # print(f"FG ids: {fg_ids}")
-    # print(f"FG weights: {weights}")
+
     if len(fg_ids) > 0 and len(weights) > 0:
-        average_attention = np.mean(weights)
-        attention_coefficients = weights - average_attention
-        # print(f"FG attention coefficients: {attention_coefficients}")
+        avg_attn = np.mean(weights)
+        attn_coeffs = weights - avg_attn
         for fg_idx, fg_id in enumerate(fg_ids):
-            coeff = attention_coefficients[fg_idx]
+            coeff = attn_coeffs[fg_idx]
             fg_name = FG_NAMES[fg_id] if fg_id < len(FG_NAMES) else f"FG_{fg_id}"
             smarts = FG_SMARTS.get(fg_name)
-            if isinstance(smarts, str):
-                patt = Chem.MolFromSmarts(smarts)
-            elif isinstance(smarts, Chem.Mol):
-                patt = smarts
-            else:
-                patt = None
+            patt = (
+                Chem.MolFromSmarts(smarts)
+                if isinstance(smarts, str)
+                else (smarts if isinstance(smarts, Chem.Mol) else None)
+            )
             if not patt:
                 continue
             matches = mol.GetSubstructMatches(patt)
-            # print(f"  FG {fg_name} (id {fg_id}), SMARTS: {smarts}, coeff: {coeff}, matches: {matches}")
             for match in matches:
+                share = coeff / max(len(match), 1)
                 for atom_idx in match:
                     if atom_idx < n_atoms:
-                        fg_atom_contribs[atom_idx] += coeff / len(match)
-                        # print(f"    Atom {atom_idx}: FG contrib += {coeff / len(match)}")
-    # print(f"Final model_atom_contribs.shape: {model_atom_contribs.shape}")
-    # print(f"Final fg_atom_contribs.shape: {fg_atom_contribs.shape}")
+                        fg_atom_contribs[atom_idx] += share
 
-    # --- Defensive check after population ---
     if model_atom_contribs.shape != fg_atom_contribs.shape:
         print(
-            f"Shape mismatch! Model: {model_atom_contribs.shape}, FG: {fg_atom_contribs.shape}"
+            f"Shape mismatch! model={model_atom_contribs.shape}, fg={fg_atom_contribs.shape}"
         )
-        print(f"SMILES: {smiles}")
-        print(f"fg_ids: {fg_ids}")
-        print(f"weights: {weights}")
-        print(f"Mol atoms: {n_atoms}")
-        print("Aborting combined visualization for this molecule.")
         return
 
-    # --- 3. Weighted sum ---
-    model_atom_contribs_norm = minmax_neg1_1(model_atom_contribs)
-    fg_atom_contribs_norm = minmax_neg1_1(fg_atom_contribs)
+    # --- 3) Weighted + normalized sum ---
+    model_norm = minmax_neg1_1(model_atom_contribs)
+    fg_norm = minmax_neg1_1(fg_atom_contribs)
+    total_atom_contribs = weight_t2a * model_norm + weight_fg * fg_norm
 
-    total_atom_contribs = (
-        weight_t2a * model_atom_contribs_norm + weight_fg * fg_atom_contribs_norm
-    )
     vmax = np.abs(total_atom_contribs).max() if n_atoms > 0 else 1.0
-    norm = total_atom_contribs / (vmax + 1e-8)
+    norm = total_atom_contribs / (vmax + 1e-8)  # in [-1, 1]
     cmap = cm.get_cmap("bwr")
 
-    # --- Top-n highlighting ---
-    if top_n is not None and top_n > 0:
-        pos_atoms = np.argsort(-total_atom_contribs)[:top_n]
-        neg_atoms = np.argsort(total_atom_contribs)[:top_n]
-        highlight_atoms = list(
-            set(int(i) for i in np.concatenate([pos_atoms, neg_atoms]))
+    # --- 4) Polarity-aware top-N selection ---
+    pos_idx = np.where(total_atom_contribs > 0)[0]
+    neg_idx = np.where(total_atom_contribs < 0)[0]
+
+    if top_n and top_n > 0:
+        pos_sel = (
+            pos_idx[np.argsort(-total_atom_contribs[pos_idx])[:top_n]]
+            if highlight_red
+            else np.array([], dtype=int)
+        )
+        neg_sel = (
+            neg_idx[np.argsort(total_atom_contribs[neg_idx])[:top_n]]
+            if highlight_blue
+            else np.array([], dtype=int)
+        )
+        selected = (
+            np.unique(np.concatenate([pos_sel, neg_sel]))
+            if (highlight_red or highlight_blue)
+            else np.array([], dtype=int)
         )
     else:
-        highlight_atoms = list(range(n_atoms))
+        # No top_n: include all of the enabled polarity/polarities
+        red_all = pos_idx if highlight_red else np.array([], dtype=int)
+        blue_all = neg_idx if highlight_blue else np.array([], dtype=int)
+        selected = (
+            np.unique(np.concatenate([red_all, blue_all]))
+            if (highlight_red or highlight_blue)
+            else np.array([], dtype=int)
+        )
 
-    atom_colors = {}
-    for i in highlight_atoms:
-        idx = int(i)
-        if 0 <= idx < n_atoms:
-            atom_colors[idx] = cmap(0.5 + 0.5 * norm[idx])[:3]
+    highlight_atoms = [int(i) for i in selected.tolist()]
+    atom_colors = {i: cmap(0.5 + 0.5 * norm[i])[:3] for i in highlight_atoms}
 
-    # Bond colors: highlight if both atoms are highlighted
+    # Bonds: only between highlighted atoms
     highlight_bonds = [
         int(b.GetIdx())
         for b in mol.GetBonds()
-        if int(b.GetBeginAtomIdx()) in highlight_atoms
-        and int(b.GetEndAtomIdx()) in highlight_atoms
+        if int(b.GetBeginAtomIdx()) in atom_colors
+        and int(b.GetEndAtomIdx()) in atom_colors
     ]
     bond_colors = {}
-    for bond_idx in highlight_bonds:
-        begin_idx = int(mol.GetBondWithIdx(bond_idx).GetBeginAtomIdx())
-        end_idx = int(mol.GetBondWithIdx(bond_idx).GetEndAtomIdx())
-        c1 = atom_colors.get(begin_idx, (1, 1, 1))
-        c2 = atom_colors.get(end_idx, (1, 1, 1))
-        bond_colors[bond_idx] = tuple(np.mean([c1, c2], axis=0))
+    for b_idx in highlight_bonds:
+        b = mol.GetBondWithIdx(b_idx)
+        c1 = atom_colors.get(int(b.GetBeginAtomIdx()))
+        c2 = atom_colors.get(int(b.GetEndAtomIdx()))
+        bond_colors[b_idx] = tuple(np.mean([c1, c2], axis=0))
 
+    # --- 5) Draw ---
     drawer = rdMolDraw2D.MolDraw2DCairo(800, 600)
     drawer.drawOptions().addAtomIndices = True
     rdMolDraw2D.PrepareAndDrawMolecule(
@@ -689,6 +679,8 @@ def visualize_combined_atom_contribution(
         highlightBondColors=bond_colors,
     )
     drawer.FinishDrawing()
-    os.makedirs(os.path.dirname(output_path), exist_ok=True)
+
+    outdir = os.path.dirname(output_path) or "."
+    os.makedirs(outdir, exist_ok=True)
     with open(output_path, "wb") as f:
         f.write(drawer.GetDrawingText())

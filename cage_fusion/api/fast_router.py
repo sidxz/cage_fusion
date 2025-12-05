@@ -43,6 +43,8 @@ class PredictIn(BaseModel):
     items: List[ItemIn]
     plot_all_attention: bool = False
     batch_size: Optional[int] = None
+    highlight_red: bool = True   # show positive contributions
+    highlight_blue: bool = False  # show negative contributions
 
 
 @app.on_event("startup")
@@ -84,6 +86,8 @@ def predict(payload: PredictIn):
             batch_size=bs,
             plot_all_attention=payload.plot_all_attention,
             attn_plot_dir=PRED_RES_DIR,
+            highlight_red=payload.highlight_red,
+            highlight_blue=payload.highlight_blue,
         )
         # return JSON; big results can be CSV-ified on demand
         return {

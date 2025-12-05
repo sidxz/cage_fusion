@@ -1,0 +1,44 @@
+version: "3.9"
+
+services:
+  cage_fusion_nuisance_api_dev:
+    build:
+      context: .
+      dockerfile: Dockerfile.dev
+    # Bind-mount code for instant reload
+    volumes:
+      - ./cage_fusion:/home/mamba/cage_fusion:delegated
+      - ./checkpoints:/checkpoints
+      - ./logs:/logs
+      - ./pred-results:/pred-results
+      # Reuse your host HF cache to avoid repeated downloads (optional)
+      - ~/.cache/huggingface:/home/mamba/.cache/huggingface
+    environment:
+      # your usual runtime vars
+      CHECKPOINT_DIR: /checkpoints/nuisance-pred
+      CAGE_FUSION_LOG_DIR: /logs
+      PRED_RES_ROOT_DIR: /pred-results
+      MODEL_NAME: DeepChem-ChemBERTa-77M-MTR-CoAttn-1-cross-aux-fgprompt
+      MODEL_FILE: best_model_mcc.pt
+      PORT: "10002"
+
+      # --- dev toggles ---
+      DEV_HOT_RELOAD: "1"
+      RELOAD_DIRS: "/home/mamba/cage_fusion"
+      # If you already have the models in the cache volume, skip warmup:
+      SKIP_HF_WARM: "0"
+      SKIP_OFFLINE_TEST: "0"
+
+      # If needed, you can override app path here:
+      # UVICORN_APP: "cage_fusion.api.fast_router:app"
+
+    ports:
+      - "10002:10002"
+
+    networks:
+      - daikon-be-net
+
+networks:
+  daikon-be-net:
+    external: true
+    name: daikon-be-net

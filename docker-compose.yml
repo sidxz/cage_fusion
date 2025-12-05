@@ -12,7 +12,7 @@ services:
       CAGE_FUSION_LOG_DIR: /logs
       PRED_RES_ROOT_DIR: /pred-results
       MODEL_NAME: DeepChem-ChemBERTa-77M-MTR-CoAttn-1-cross-aux-fgprompt
-      MODEL_FILE: latest_checkpoint.pt
+      MODEL_FILE: best_model_mcc.pt
       BATCH_SIZE: "24"
 
     networks:

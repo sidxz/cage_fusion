@@ -64,6 +64,8 @@ def _plot_batch_attentions(
     original_idx,
     weight_fg=None,
     weight_t2a=None,
+    highlight_red: bool = True,
+    highlight_blue: bool = False,
 ):
     if g2t_weights is None or t2a_weights is None:
         return []
@@ -108,6 +110,8 @@ def _plot_batch_attentions(
         t2a_weights_sample=attn,
         pred_logit=pred_logit,
         output_path=os.path.join(sample_plot_dir, "atom_total_contrib.png"),
+        highlight_red=highlight_red,
+        highlight_blue=highlight_blue,
     )
 
     if prompt_attn_weights and prompt_attn_weights[j] is not None:
@@ -116,6 +120,8 @@ def _plot_batch_attentions(
             prompt_attn_weights=prompt_attn_weights[j],
             output_path=os.path.join(sample_plot_dir, "fg_prompt_attention.png"),
             title="Functional Group Attention (PROMPT)",
+            highlight_red=highlight_red,
+            highlight_blue=highlight_blue,
         )
         if (weight_fg is not None) and (weight_t2a is not None):
             visualize_combined_atom_contribution(
@@ -126,6 +132,8 @@ def _plot_batch_attentions(
                 output_path=os.path.join(sample_plot_dir, "atom_combined_contrib.png"),
                 weight_t2a=float(weight_t2a),
                 weight_fg=float(weight_fg),
+                highlight_red=highlight_red,
+                highlight_blue=highlight_blue,
             )
 
     # Collect top token strings
@@ -198,6 +206,8 @@ class CAGEFusionPredictor:
         plot_all_attention: bool = False,
         attn_plot_dir: Optional[str] = None,
         temp_dir: Optional[str] = None,
+        highlight_red: bool = True,
+        highlight_blue: bool = False,
     ) -> pd.DataFrame:
         if plot_all_attention and not attn_plot_dir:
             raise ValueError(
@@ -324,6 +334,8 @@ class CAGEFusionPredictor:
                             original_idx=original_idx,
                             weight_fg=weight_fg,
                             weight_t2a=weight_t2a,
+                            highlight_red=highlight_red,
+                            highlight_blue=highlight_blue,
                         )
                         batch_top_tokens.append(
                             "|".join(kept_tokens) if kept_tokens else ""
