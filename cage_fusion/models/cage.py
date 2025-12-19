@@ -246,8 +246,20 @@ class CAGEFusionModel(nn.Module):
             # nn.LayerNorm(128),
             nn.ReLU(),
         )
-        self.output = nn.Linear(128, self.num_tasks)
+        # Original output layer is linear to num_tasks
+        # self.output = nn.Linear(128, self.num_tasks)
+        # Test with Predictor MLP Dec 19, 2025
+        self.output_heads = nn.ModuleList([
+            nn.Sequential(
+                nn.Linear(128, 64),
+                nn.ReLU(),
+                nn.Dropout(config.get("head_dropout", 0.1)),
+                nn.Linear(64, 1)
+            ) for _ in range(self.num_tasks)
+        ])
+        
         self.attention_aggregation = MeanAggregation()
+        
 
         logger.info("CAGEFusionModel initialization complete")
 
@@ -508,7 +520,16 @@ class CAGEFusionModel(nn.Module):
         #fused = raw_fused * gate + raw_fused
         fused = torch.nan_to_num(fused, nan=0.0, posinf=1e3, neginf=-1e3)
 
-        logits = self.output(self.fusion_mlp(fused))
+        
+        # Original output layer is linear to num_tasks
+        #logits = self.output(self.fusion_mlp(fused))
+        
+        # Test with Predictor MLP Dec 19, 2025
+        # 1. Generate the shared fused representation
+        fused_repr = self.fusion_mlp(fused)
+        # 2. Iterate through task-specific heads
+        # Each head outputs [Batch, 1], so we concatenate to [Batch, num_tasks]
+        logits = torch.cat([head(fused_repr) for head in self.output_heads], dim=1)
 
         return (
             logits,

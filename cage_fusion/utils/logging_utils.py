@@ -4,7 +4,7 @@ from rich.logging import RichHandler
 from loguru import logger as loguru_logger
 
 # Ensure the logs directory exists
-LOG_DIR = os.getenv("CAGE_FUSION_LOG_DIR", "/logs")
+LOG_DIR = os.getenv("CAGE_FUSION_LOG_DIR", "./logs")
 os.makedirs(LOG_DIR, exist_ok=True)
  
 LOG_FILE = os.path.join(LOG_DIR, "cagefusion.log")
