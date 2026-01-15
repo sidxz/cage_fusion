@@ -1,26 +1,52 @@
-# CAGE-Fusion: Deep Learning for Nuisance Compound Detection
+# CAGE-Fusion  
+**Deep Learning for Assay Nuisance Compound Detection Using a Gated Co-Attention Graph Embedding Model (CAGE-Fusion)**
 
-CAGE-Fusion is a **deep learning framework** for identifying nuisance compounds—such as aggregators, luciferase inhibitors, reactive, and promiscuous molecules—that often cause false positives in early drug discovery.  
-It integrates **graph neural networks (GNNs)**, **SMILES-based transformers**, and **physicochemical descriptors** through a **gated co-attention mechanism**, enabling context-aware and interpretable predictions.
+CAGE-Fusion is a **general-purpose deep learning framework** for molecular property prediction that integrates **graph-based**, **sequence-based**, and **descriptor-based** molecular representations through a **gated co-attention mechanism**.
 
-> ⚠️ This repository hosts the core code and API for CAGE-Fusion.  
-> Detailed architectural and dataset information will be released upon publication of the corresponding manuscript.
+The architecture is designed to enable **bidirectional information exchange** between molecular graphs and SMILES sequences, producing chemically coherent representations that are both **highly predictive** and **interpretable**. While CAGE-Fusion is applicable to a wide range of molecular clasification tasks, it is demonstrated here through a comprehensive **assay nuisance compound detection** case study.
 
----
 
-## Overview
-
-CAGE-Fusion leverages **multimodal molecular representations** to capture both topological and sequence-level chemical context:
-- **Graph Encoder:** Directed Message Passing Neural Network (D-MPNN)
-- **SMILES Encoder:** Transformer-based chemical language model (ChemBERTa backbone)
-- **Co-Attention Fusion:** Enables iterative alignment between atoms and SMILES tokens
-- **Descriptor Stream:** Adds global RDKit-derived 2D physicochemical features
-
-The model outputs **probabilities for multiple nuisance classes** and provides **interpretable attention maps** that highlight key substructures influencing the prediction.
+> 
+> **ChemRxiv:** https://chemrxiv.org/engage/chemrxiv/article-details/69612bd3fc9dac0f37ebd868
+> 
+> **Datasets:** https://zenodo.org/records/17118024
+> 
+> **Model Weights:** https://files.orca-03.biobio.tamu.edu/model-weights/cage-fusion/nuisance/
+> 
+> **Inference Web Server:** https://studio.orca-03.biobio.tamu.edu/
 
 ---
 
-## API Deployment (Docker)
+## Key Contributions
+
+- **Multimodal molecular learning framework** combining:
+  - Molecular graphs (D-MPNN)
+  - SMILES sequences (Transformer / ChemBERTa)
+  - Optional physicochemical descriptors (RDKit)
+- **Gated co-attention mechanism** enabling iterative cross-modal refinement
+- **Interpretable attention maps** highlighting chemically relevant substructures
+- **Production-ready deployment** via Docker and FastAPI
+
+
+---
+
+## Assay Nuisance Compound Detection
+
+CAGE-Fusion is applied to the detection of **assay nuisance compounds**—molecules that generate misleading signals in biochemical or cell-based assays.
+
+### Supported Nuisance Classes
+- **Aggregators**
+- **Luciferase inhibitors**
+- **Reactive compounds**
+- **Promiscuous / frequent hitters**
+- 
+---
+
+## Inference API Deployment (Docker)
+
+CAGE-Fusion can be deployed as a **FastAPI-based inference service** using Docker.
+
+### Example `docker-compose.yml`
 
 To serve the CAGE-Fusion model as an inference API, use the provided `docker-compose.yml`.
 
@@ -42,13 +68,7 @@ services:
       MODEL_NAME: DeepChem-ChemBERTa-77M-MTR-CoAttn-1-cross-aux-fgprompt
       MODEL_FILE: latest_checkpoint.pt
       BATCH_SIZE: "24"
-    networks:
-      - daikon-be-net
 
-networks:
-  daikon-be-net:
-    external: true
-    name: daikon-be-net
 ```
 
 ### Running the API
@@ -56,7 +76,7 @@ networks:
 docker compose up --build -d
 ```
 
-Once started, the FastAPI service runs at:
+FastAPI service runs at:
 
 ```
 http://localhost:10002/docs
@@ -93,8 +113,6 @@ The container uses a startup script that:
 
 - Docker with GPU support (optional)
 - Mounted model checkpoint under `/checkpoints/nuisance-pred`
-
----
 
 
 ## License
