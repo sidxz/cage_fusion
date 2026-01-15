@@ -39,7 +39,6 @@ CAGE-Fusion is applied to the detection of **assay nuisance compounds**—molecu
 - **Luciferase inhibitors**
 - **Reactive compounds**
 - **Promiscuous / frequent hitters**
-- 
 ---
 
 ## Inference API Deployment (Docker)
