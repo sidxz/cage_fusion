@@ -43,7 +43,7 @@ class PredictIn(BaseModel):
     items: List[ItemIn]
     plot_all_attention: bool = False
     batch_size: Optional[int] = None
-    highlight_red: bool = True   # show positive contributions
+    highlight_red: bool = True  # show positive contributions
     highlight_blue: bool = False  # show negative contributions
 
 
@@ -61,7 +61,10 @@ def health():
         raise HTTPException(status_code=503, detail="Model not ready")
     return {
         "ready": True,
+        "service": API_CONTROLLER_NAME,
+        "versionName": MODEL_NAME,
         "model_name": MODEL_NAME,
+        "timestamp": pd.Timestamp.now().isoformat(),
         "checkpoint_dir": CHECKPOINT_DIR,
         "model_file": MODEL_FILE,
         "tasks": predictor.tasks,

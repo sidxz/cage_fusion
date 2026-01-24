@@ -34,6 +34,7 @@ def get_default_config():
         "use_aux_features": True,  # Use auxiliary features in the model
         "use_fg_prompt": True,  # Use functional group prompts
         "co_attention_layers": 1,  # Number of Co-Attention layers
+        "use_embedding_proj": True,  # Use embedding projection layer # DO NOT CHANGE THIS DEFAULT
         # === Scaled Attention Factor ===
         "scaled_graph_factor": 10.0,  # Scaling factor for attention scores
         "scale_attn_factor": 1.0,  # Scaling factor for attention scores
@@ -62,3 +63,4 @@ def get_default_config():
     }
 
     return config
+

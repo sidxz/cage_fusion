@@ -47,6 +47,7 @@ class CAGEFusionModel(nn.Module):
         self.use_co_attention = config.get("use_co_attention", True)
         self.use_aux_features = config.get("use_aux_features", True)
         self.use_fg_prompt = config.get("use_fg_prompt", False)
+        self.use_embedding_proj = config.get("use_embedding_proj", True)
 
         # NEW: attention mode toggle (default keeps current behavior)
         self.attn_mode = config.get(
@@ -282,7 +283,7 @@ class CAGEFusionModel(nn.Module):
         graph_part = self.scale_graph * prompted_graph_repr
 
         # Attention output (if co-attention enabled)
-        if self.use_co_attention and sequence_embeddings is not None:
+        if self.use_co_attention and sequence_embeddings is not None and self.use_embedding_proj:
             # ====== ORIGINAL CROSS-ATTN PATH (unchanged) ======
             if self.attn_mode == "cross":
                 embedding_proj = self.embedding_proj(sequence_embeddings)
