@@ -38,7 +38,18 @@ ENV CHECKPOINT_DIR=/checkpoints/nuisance-pred \
     NVIDIA_VISIBLE_DEVICES=all \
     NVIDIA_DRIVER_CAPABILITIES=compute,utility
 
-# ---- Startup script (does HF cache warm + launches uvicorn) ----
+RUN ./bin/micromamba install -y -n cage-fusion -c conda-forge \
+    libstdcxx-ng libgcc-ng
+
+# Fix SciPy/sklearn C++ ABI mismatch (CXXABI_1.3.15)
+ENV LD_LIBRARY_PATH=/home/mamba/mamba/envs/cage-fusion/lib:${LD_LIBRARY_PATH}
+
+RUN ./bin/micromamba run -n cage-fusion python - <<'PY'
+import scipy, sklearn
+print("OK: scipy/sklearn import succeeded")
+PY
+
+    # ---- Startup script (does HF cache warm + launches uvicorn) ----
 COPY --chown=${MAMBA_USER}:${MAMBA_USER} entrypoint.sh /home/${MAMBA_USER}/entrypoint.sh
 RUN chmod +x /home/${MAMBA_USER}/entrypoint.sh
 
