@@ -28,14 +28,13 @@ if project_root not in sys.path:
     sys.path.insert(0, project_root)
 
 # ======== Local Imports ========
-from cage_fusion.configs import get_default_config
-from cage_fusion.models import CAGEFusionModel
-from cage_fusion.engine.training import train_model
-from cage_fusion.engine.dataset import CageFusionStreamingDataset
-from cage_fusion.engine.data_utils import collate_fn_for_cage_fusion
-from cage_fusion.engine.utils import compute_pos_weight_from_h5
-from cage_fusion.featurizers import featurize_and_save_streaming
-from cage_fusion.utils.logging_utils import logger
+from cage_fusion.configuration import CageFusionConfig
+from cage_fusion.modeling import CAGEFusionForMultiLabelClassification
+from cage_fusion.training import Trainer, TrainingArguments
+from cage_fusion.data import CageFusionStreamingDataset, collate_cage_fusion
+from cage_fusion.utils import compute_pos_weight_from_h5
+from cage_fusion.featurization import featurize_and_save_streaming
+from cage_fusion.utils.logging import logger
 
 # Assuming run_benchmark is in the same directory or a discoverable path.
 from .run_benchmark import (

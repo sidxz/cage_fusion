@@ -25,14 +25,12 @@ if project_root not in sys.path:
     sys.path.insert(0, project_root)
 
 # Use the project's own modules to ensure data is created correctly
-from cage_fusion.models.cage import CAGEFusionModel
-from cage_fusion.configs import get_default_config
-from cage_fusion.utils.logging_utils import logger
-from cage_fusion.featurizers.core import featurize_and_save_streaming
-from cage_fusion.engine.dataset import CageFusionStreamingDataset
-from cage_fusion.engine.data_utils import collate_fn_for_cage_fusion
-# FIX: Import and use the project's own utility for moving graph to device
-from cage_fusion.engine.utils import move_bmg_to_device
+from cage_fusion.modeling import CAGEFusionModel
+from cage_fusion.configuration import CageFusionConfig
+from cage_fusion.utils.logging import logger
+from cage_fusion.featurization import featurize_and_save_streaming
+from cage_fusion.data import CageFusionStreamingDataset, collate_cage_fusion
+from cage_fusion.utils import move_bmg_to_device
 from cage_fusion.utils.hf_loader import load_tokenizer
 
 # Try to import torchviz, and provide a helpful error message if it's not installed.

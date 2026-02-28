@@ -4,11 +4,11 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "cage_fusion"
-version = "0.0.1"
+version = "0.2.0"
 authors = [
   { name="Your Name", email="you@example.com" },
 ]
-description = "A core library for the CAGEFusionModel"
+description = "Multimodal molecular property prediction — HuggingFace-style API"
 readme = "README.md"
 requires-python = ">=3.8"
 classifiers = [
@@ -28,3 +28,6 @@ dependencies = [
     "chemprop",
     "rdkit"
 ]
+
+[tool.setuptools.package-data]
+cage_fusion = ["py.typed"]
