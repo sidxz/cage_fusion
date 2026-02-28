@@ -25,9 +25,9 @@ from rich.console import Console
 from tqdm import tqdm
 
 from cage_fusion.training.metrics import (
-    AUCBatchAggregatorToDisk,
-    MCCBatchAggregatorToDisk,
-    PRBatchAggregatorToDisk,
+    AUCAccumulator,
+    MCCAccumulator,
+    PRAccumulator,
 )
 from cage_fusion.training.training_args import TrainingArguments
 from cage_fusion.utils.device_utils import move_bmg_to_device
@@ -133,7 +133,6 @@ class Trainer:
         optimizer: Optional[torch.optim.Optimizer] = None,
         scheduler=None,
         label_names: Optional[List[str]] = None,
-        tokenizer_obj=None,
         device: Optional[torch.device] = None,
     ):
         self.model = model
@@ -141,7 +140,6 @@ class Trainer:
         self.train_loader = train_loader
         self.val_loader = val_loader
         self.criterion = criterion
-        self.tokenizer_obj = tokenizer_obj
         self.device = device or torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
         # Resolve label names: explicit argument > model config > empty list
@@ -173,7 +171,6 @@ class Trainer:
     def train(self) -> dict:
         """Run the full training loop and return the history dict."""
         args = self.args
-        os.makedirs(args.base_cache_dir, exist_ok=True)
         os.makedirs(args.checkpoints_dir, exist_ok=True)
 
         checkpoint_path = os.path.join(args.checkpoints_dir, "latest_checkpoint.pt")
@@ -201,11 +198,9 @@ class Trainer:
 
         for epoch in range(start_epoch, args.num_epochs + 1):
             console.rule(f"[bold blue]Epoch {epoch}/{args.num_epochs}")
-            train_cache = os.path.join(args.base_cache_dir, f"epoch_{epoch}_train")
-            val_cache = os.path.join(args.base_cache_dir, f"epoch_{epoch}_val")
 
-            train_metrics = self.train_epoch(epoch, cache_dir=train_cache)
-            val_metrics = self.evaluate(cache_dir=val_cache)
+            train_metrics = self.train_epoch(epoch)
+            val_metrics = self.evaluate()
 
             self._update_history(history, train_metrics, val_metrics)
             self._log_epoch(epoch, history, val_metrics)
@@ -229,7 +224,7 @@ class Trainer:
         self._plot_history(history)
         return history
 
-    def train_epoch(self, epoch: int, cache_dir: str = ".cache/train") -> dict:
+    def train_epoch(self, epoch: int) -> dict:
         """Run one training epoch. Returns a metrics dict."""
         args = self.args
         model = self.model
@@ -237,9 +232,9 @@ class Trainer:
 
         num_tasks = getattr(getattr(model, "config", None), "num_labels", 1)
 
-        mcc_agg = MCCBatchAggregatorToDisk(num_tasks, os.path.join(cache_dir, "mcc"), self.label_names)
-        auc_agg = AUCBatchAggregatorToDisk(num_tasks, os.path.join(cache_dir, "auc"), self.label_names)
-        pr_agg = PRBatchAggregatorToDisk(num_tasks, os.path.join(cache_dir, "pr"), self.label_names)
+        mcc_agg = MCCAccumulator(num_tasks, self.label_names)
+        auc_agg = AUCAccumulator(num_tasks, self.label_names)
+        pr_agg = PRAccumulator(num_tasks, self.label_names)
 
         total_loss = 0.0
         fg_attention: dict = defaultdict(float)
@@ -322,15 +317,15 @@ class Trainer:
         return {"loss": avg_loss, "mcc": avg_mcc, "auc": avg_auc, "pr": avg_pr}
 
     @torch.no_grad()
-    def evaluate(self, cache_dir: str = ".cache/val") -> dict:
+    def evaluate(self) -> dict:
         """Evaluate on val_loader. Returns a metrics dict."""
         model = self.model
         model.eval()
         num_tasks = getattr(getattr(model, "config", None), "num_labels", 1)
 
-        mcc_agg = MCCBatchAggregatorToDisk(num_tasks, os.path.join(cache_dir, "mcc"), self.label_names)
-        auc_agg = AUCBatchAggregatorToDisk(num_tasks, os.path.join(cache_dir, "auc"), self.label_names)
-        pr_agg = PRBatchAggregatorToDisk(num_tasks, os.path.join(cache_dir, "pr"), self.label_names)
+        mcc_agg = MCCAccumulator(num_tasks, self.label_names)
+        auc_agg = AUCAccumulator(num_tasks, self.label_names)
+        pr_agg = PRAccumulator(num_tasks, self.label_names)
 
         total_loss = 0.0
         total_graph_norm = total_attn_norm = total_aux_norm = 0.0

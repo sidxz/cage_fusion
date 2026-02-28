@@ -1,12 +1,12 @@
 from .training_args import TrainingArguments
 from .trainer import Trainer, freeze_phase
-from .metrics import AUCBatchAggregatorToDisk, MCCBatchAggregatorToDisk, PRBatchAggregatorToDisk
+from .metrics import AUCAccumulator, MCCAccumulator, PRAccumulator
 
 __all__ = [
     "TrainingArguments",
     "Trainer",
     "freeze_phase",
-    "AUCBatchAggregatorToDisk",
-    "MCCBatchAggregatorToDisk",
-    "PRBatchAggregatorToDisk",
+    "AUCAccumulator",
+    "MCCAccumulator",
+    "PRAccumulator",
 ]

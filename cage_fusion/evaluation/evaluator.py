@@ -15,9 +15,9 @@ import numpy as np
 import torch
 
 from cage_fusion.training.metrics import (
-    AUCBatchAggregatorToDisk,
-    MCCBatchAggregatorToDisk,
-    PRBatchAggregatorToDisk,
+    AUCAccumulator,
+    MCCAccumulator,
+    PRAccumulator,
 )
 from cage_fusion.utils.device_utils import move_bmg_to_device
 from tqdm import tqdm
@@ -31,7 +31,6 @@ def evaluate_model(
     loader,
     device: torch.device,
     label_names: Optional[List[str]] = None,
-    cache_dir: str = ".cache/eval",
     threshold_search: np.ndarray = np.linspace(0.1, 0.9, 20),
     use_precomputed_thresholds: Optional[np.ndarray] = None,
     criterion: Optional[torch.nn.Module] = None,
@@ -49,8 +48,6 @@ def evaluate_model(
         Device to run inference on.
     label_names:
         Optional task names for per-task logging.
-    cache_dir:
-        Temporary directory for disk-based metric aggregation.
     threshold_search:
         Grid of thresholds for MCC optimisation.
     use_precomputed_thresholds:
@@ -69,9 +66,9 @@ def evaluate_model(
     model.eval()
     num_tasks = getattr(getattr(model, "config", None), "num_labels", 1)
 
-    mcc_agg = MCCBatchAggregatorToDisk(num_tasks, f"{cache_dir}/mcc", label_names)
-    auc_agg = AUCBatchAggregatorToDisk(num_tasks, f"{cache_dir}/auc", label_names)
-    pr_agg = PRBatchAggregatorToDisk(num_tasks, f"{cache_dir}/pr", label_names)
+    mcc_agg = MCCAccumulator(num_tasks, label_names)
+    auc_agg = AUCAccumulator(num_tasks, label_names)
+    pr_agg = PRAccumulator(num_tasks, label_names)
 
     total_loss = 0.0
     total_graph_norm = total_attn_norm = total_aux_norm = 0.0

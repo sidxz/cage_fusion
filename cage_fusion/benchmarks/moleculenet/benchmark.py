@@ -44,7 +44,7 @@ def run_moleculenet_benchmark(
     num_epochs: int = 50,
     batch_size: int = 256,
     learning_rate: float = 3e-4,
-    attn_mode: str = "self_graph",
+    attn_mode: str = "cross",
     use_fg_prompt: bool = True,
     config: Optional[CageFusionConfig] = None,
     training_args: Optional[TrainingArguments] = None,
@@ -140,7 +140,6 @@ def run_moleculenet_benchmark(
         training_args = TrainingArguments(
             output_dir=output_dir,
             checkpoints_dir=checkpoint_dir,
-            base_cache_dir=os.path.join(output_dir, "train_cache"),
             num_epochs=num_epochs,
             batch_size=batch_size,
             learning_rate=learning_rate,
@@ -184,25 +183,20 @@ def run_moleculenet_benchmark(
         loader=dm.test_loader,
         criterion=criterion,
         device=device,
-        num_tasks=len(dm.label_names),
         label_names=dm.label_names,
         use_precomputed_thresholds=best_thresholds,
-        cache_dir=os.path.join(output_dir, "test_cache"),
     )
 
-    # evaluate_model returns a named tuple / dict-like
-    (test_loss, test_mcc, test_auc, test_pr, *rest) = test_metrics
-    per_task = rest[1] if len(rest) > 1 else []
-
     logger.info(
-        "Test results | AUC=%.4f  MCC=%.4f  PR=%.4f", test_auc, test_mcc, test_pr
+        "Test results | AUC=%.4f  MCC=%.4f  PR=%.4f",
+        test_metrics["auc"], test_metrics["mcc"], test_metrics["pr"],
     )
 
     return {
-        "test_auc": float(test_auc),
-        "test_mcc": float(test_mcc),
-        "test_pr": float(test_pr),
-        "per_task_metrics": per_task,
+        "test_auc": float(test_metrics["auc"]),
+        "test_mcc": float(test_metrics["mcc"]),
+        "test_pr": float(test_metrics["pr"]),
+        "per_task_metrics": test_metrics.get("per_task", []),
         "label_names": dm.label_names,
         "checkpoint_dir": checkpoint_dir,
         "history": history,

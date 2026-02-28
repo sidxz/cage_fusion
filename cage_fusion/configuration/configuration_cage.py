@@ -20,7 +20,7 @@ Quick start
         num_labels=4,
         model_task="classification",
         label_names=["PAINS_A", "PAINS_B", "Aggregator", "Chelator"],
-        attn_mode="self_graph",
+        attn_mode="cross",
     )
     config.save_pretrained("my_model/")
 
@@ -101,7 +101,7 @@ class CageFusionConfig:
     aux_feature_dim: int = 217
 
     # ── Co-Attention ─────────────────────────────────────────────────────────
-    attn_mode: Literal["cross", "self_tokens", "self_graph", "self_both"] = "self_graph"
+    attn_mode: Literal["cross", "self_tokens", "self_graph", "self_both"] = "cross"
     num_heads: int = 8
     co_attention_layers: int = 1
     cross_attn_dropout: float = 0.15

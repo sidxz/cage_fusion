@@ -112,7 +112,7 @@ def featurize_and_save_streaming(
         raise ValueError("Model embedding size must be > 0.")
     D_seq_len = min(512, int(getattr(model.config, "max_position_embeddings", 512)))
 
-    descriptor_names = [desc[0] for desc in Descriptors._descList]
+    descriptor_names = [desc[0] for desc in Descriptors.descList]
     desc_calc = MoleculeDescriptors.MolecularDescriptorCalculator(descriptor_names)
     graph_featurizer = SimpleMoleculeMolGraphFeaturizer()
     D_aux_feats = len(descriptor_names)

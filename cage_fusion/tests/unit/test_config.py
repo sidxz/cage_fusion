@@ -20,7 +20,7 @@ class TestCageFusionConfig:
         assert cfg.aux_feature_dim == 217
         assert cfg.hidden_size == 128
         assert cfg.num_labels == 4
-        assert cfg.attn_mode == "self_graph"
+        assert cfg.attn_mode == "cross"
         assert cfg.model_task == "classification"
         assert cfg.label_names is None
 
