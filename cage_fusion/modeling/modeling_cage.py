@@ -64,7 +64,7 @@ from cage_fusion.modeling.modules import (
     FusionHead,
     SelfAttentionBlock,
 )
-from cage_fusion.utils.hf_loader import load_tokenizer
+from cage_fusion.utils.hf_loader import load_tokenizer, _resolve_pretrained_path
 
 logger = logging.getLogger("cagefusion")
 
@@ -150,6 +150,8 @@ class CAGEFusionPreTrainedModel(nn.Module):
                 strict=False,   # ignore head mismatch when fine-tuning
             )
         """
+        pretrained_model_name_or_path = _resolve_pretrained_path(pretrained_model_name_or_path)
+
         if config is None:
             config = CageFusionConfig.from_pretrained(pretrained_model_name_or_path)
 

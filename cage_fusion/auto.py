@@ -35,6 +35,7 @@ from __future__ import annotations
 from typing import Optional
 
 from cage_fusion.configuration.configuration_cage import CageFusionConfig
+from cage_fusion.utils.hf_loader import _resolve_pretrained_path
 from cage_fusion.modeling.modeling_cage import (
     CAGEFusionForMultiLabelClassification,
     CAGEFusionForRegression,
@@ -112,22 +113,29 @@ class AutoCageFusion:
         pretrained_model_name_or_path: str,
         config: Optional[CageFusionConfig] = None,
         strict: bool = True,
+        load_backbone_only: bool = False,
         **kwargs,
     ) -> CAGEFusionPreTrainedModel:
         """
-        Load a model from a checkpoint directory.
+        Load a model from a checkpoint directory or HuggingFace Hub repo.
 
         If *config* is not provided it is read from ``config.json`` in the
         checkpoint directory.
 
         Args:
-            pretrained_model_name_or_path: Local path to a directory
-                containing ``config.json`` and ``pytorch_model.bin`` (or
-                ``model.safetensors``).
+            pretrained_model_name_or_path: Local directory **or** a HuggingFace
+                Hub repo ID (e.g. ``"sidxz/cage-fusion-nuisance"``).  Hub repos
+                are downloaded on first call and cached locally.
             config: Optional :class:`~cage_fusion.configuration.CageFusionConfig`
-                that overrides the one stored in the checkpoint.
+                that overrides the one stored in the checkpoint.  Required when
+                *load_backbone_only=True* and the new task has different
+                ``num_labels``.
             strict: Passed to :py:meth:`load_state_dict`; set to ``False``
                 when transferring weights across architectures.
+            load_backbone_only: When ``True``, forces ``strict=False`` and logs
+                a clear message that only the encoder weights will be restored
+                while the task head is randomly initialised.  Use this for
+                transfer learning to a new task.
             **kwargs: Additional keyword arguments forwarded to the model
                 ``from_pretrained`` classmethod.
 
@@ -136,13 +144,35 @@ class AutoCageFusion:
 
         Raises:
             FileNotFoundError: If ``config.json`` is missing and *config* is
-                not provided.
+                not provided, or if a Hub download fails.
             ValueError: If ``model_task`` resolves to an unknown value.
 
-        Example::
+        Examples::
 
-            model = AutoCageFusion.from_pretrained("checkpoints/my_run")
+            # Load published nuisance model from Hub:
+            model = AutoCageFusion.from_pretrained("sidxz/cage-fusion-nuisance")
+
+            # Transfer learning: load encoder, reset head for a new task:
+            new_config = CageFusionConfig(num_labels=12, model_task="regression",
+                                          label_names=[...])
+            model = AutoCageFusion.from_pretrained(
+                "sidxz/cage-fusion-nuisance",
+                config=new_config,
+                load_backbone_only=True,
+            )
         """
+        import logging as _logging
+        _logger = _logging.getLogger("cagefusion")
+
+        pretrained_model_name_or_path = _resolve_pretrained_path(pretrained_model_name_or_path)
+
+        if load_backbone_only:
+            strict = False
+            _logger.info(
+                "load_backbone_only=True: encoder weights loaded, "
+                "task head randomly initialised."
+            )
+
         if config is None:
             config = CageFusionConfig.from_pretrained(pretrained_model_name_or_path)
 

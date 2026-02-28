@@ -45,7 +45,6 @@ import os
 from dataclasses import dataclass, field, asdict
 from typing import List, Literal, Optional
 
-
 @dataclass
 class CageFusionConfig:
     """
@@ -248,6 +247,8 @@ class CageFusionConfig:
         Returns:
             :class:`CageFusionConfig` instance.
         """
+        from cage_fusion.utils.hf_loader import _resolve_pretrained_path  # lazy to avoid circular import
+        pretrained_model_name_or_path = _resolve_pretrained_path(pretrained_model_name_or_path)
         path = os.path.join(pretrained_model_name_or_path, "config.json")
         if not os.path.isfile(path):
             raise FileNotFoundError(

@@ -65,7 +65,7 @@ from cage_fusion.data import CageFusionStreamingDataset, collate_cage_fusion
 from cage_fusion.featurization import featurize_and_save_streaming
 from cage_fusion.modeling import CAGEFusionForMultiLabelClassification
 from cage_fusion.utils.device_utils import move_bmg_to_device
-from cage_fusion.utils.hf_loader import load_hf_checkpoint
+from cage_fusion.utils.hf_loader import load_hf_checkpoint, _resolve_pretrained_path
 from cage_fusion.visualization import (
     visualize_combined_atom_contribution,
     visualize_fg_attention,
@@ -239,6 +239,7 @@ class CageFusionPipeline:
         model_file_name: str = "best_model.pt",
         device: Optional[str] = None,
     ) -> None:
+        checkpoint_dir = _resolve_pretrained_path(checkpoint_dir)
         self.checkpoint_dir = checkpoint_dir
         self.model_file_name = model_file_name
         self.device = torch.device(

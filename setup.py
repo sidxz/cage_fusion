@@ -14,6 +14,7 @@ setup(
         'tqdm',
         'joblib',
         'transformers',
+        'huggingface_hub',
         'chemprop',
         'rdkit'
     ],
