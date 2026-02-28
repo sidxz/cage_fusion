@@ -141,11 +141,32 @@ class Trainer:
         self.train_loader = train_loader
         self.val_loader = val_loader
         self.criterion = criterion
-        self.optimizer = optimizer
-        self.scheduler = scheduler
-        self.label_names = label_names
         self.tokenizer_obj = tokenizer_obj
         self.device = device or torch.device("cuda" if torch.cuda.is_available() else "cpu")
+
+        # Resolve label names: explicit argument > model config > empty list
+        if label_names is not None:
+            self.label_names = label_names
+        else:
+            cfg = getattr(model, "config", None)
+            self.label_names = getattr(cfg, "label_names", None) or []
+
+        # Build a default Adam optimizer if none was provided
+        if optimizer is not None:
+            self.optimizer = optimizer
+        else:
+            trainable = [p for p in model.parameters() if p.requires_grad]
+            self.optimizer = torch.optim.Adam(
+                trainable,
+                lr=args.learning_rate,
+                weight_decay=args.weight_decay,
+            )
+            logger.info(
+                "Auto-built Adam optimizer  lr=%.2e  wd=%.2e  params=%d",
+                args.learning_rate, args.weight_decay, len(trainable),
+            )
+
+        self.scheduler = scheduler
 
     # ── Public API ──────────────────────────────────────────────────────────
 
