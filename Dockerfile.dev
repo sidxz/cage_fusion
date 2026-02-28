@@ -1,35 +1,34 @@
 FROM pytorch/pytorch:2.6.0-cuda12.4-cudnn9-runtime
 
-ARG MAMBA_USER=mamba
+ARG APP_USER=appuser
 SHELL ["/bin/bash", "-o", "pipefail", "-c"]
 
-RUN apt-get update && apt-get install -y curl ca-certificates bzip2 && rm -rf /var/lib/apt/lists/*
-RUN useradd -m ${MAMBA_USER}
-USER ${MAMBA_USER}
-WORKDIR /home/${MAMBA_USER}
+RUN apt-get update && apt-get install -y ca-certificates && rm -rf /var/lib/apt/lists/*
 
-# micromamba
-RUN curl -L https://micro.mamba.pm/api/micromamba/linux-64/latest | tar -xvj bin/micromamba
+# Install uv
+COPY --from=ghcr.io/astral-sh/uv:latest /uv /uvx /bin/
 
-ENV MAMBA_ROOT_PREFIX=/home/${MAMBA_USER}/mamba
-ENV PATH=/home/${MAMBA_USER}/bin:$PATH
-ENV MAMBA_DOCKERFILE_ACTIVATE=1
+RUN useradd -m ${APP_USER}
+USER ${APP_USER}
+WORKDIR /home/${APP_USER}
 
-# Build deps layer (rebuilds only if env changes)
-COPY --chown=${MAMBA_USER}:${MAMBA_USER} environment.yml /home/${MAMBA_USER}/environment.yml
-RUN ./bin/micromamba create -y -n cage-fusion -f environment.yml
+# Build deps layer (rebuilds only if pyproject.toml/uv.lock change)
+COPY --chown=${APP_USER}:${APP_USER} pyproject.toml uv.lock ./
 
-# copy entrypoint (dev-aware)
-COPY --chown=${MAMBA_USER}:${MAMBA_USER} entrypoint.sh /home/${MAMBA_USER}/entrypoint.sh
-RUN chmod +x /home/${MAMBA_USER}/entrypoint.sh
+# Inherit system site-packages so torch from the base image is available
+RUN uv venv --system-site-packages .venv && \
+    uv sync --frozen --no-install-package torch
 
-# runtime dirs (also mounted)
-#RUN mkdir -p /checkpoints /logs /pred-results
+ENV VIRTUAL_ENV=/home/appuser/.venv
+ENV PATH="/home/appuser/.venv/bin:$PATH"
 
-ENV HF_HOME=/home/${MAMBA_USER}/.cache/huggingface \
-    HF_HUB_CACHE=/home/${MAMBA_USER}/.cache/huggingface/hub \
+ENV HF_HOME=/home/appuser/.cache/huggingface \
+    HF_HUB_CACHE=/home/appuser/.cache/huggingface/hub \
     PYTHONUNBUFFERED=1 \
-    PYTHONPATH=/home/${MAMBA_USER}
+    PYTHONPATH=/home/appuser
+
+COPY --chown=${APP_USER}:${APP_USER} entrypoint.sh ./entrypoint.sh
+RUN chmod +x ./entrypoint.sh
 
 EXPOSE 10002
-ENTRYPOINT ["/home/mamba/entrypoint.sh"]
+ENTRYPOINT ["./entrypoint.sh"]

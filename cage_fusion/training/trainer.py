@@ -297,16 +297,17 @@ class Trainer:
         avg_auc = auc_agg.compute()
         avg_pr = pr_agg.compute()
 
-        # Log top-5 attended functional groups
+        # Log top-5 attended functional groups (single message to avoid Jupyter output fragmentation)
         if fg_attention:
             avg_fg = {k: fg_attention[k] / fg_count[k] for k in fg_attention if fg_count[k] > 0}
             top5 = sorted(avg_fg.items(), key=lambda x: x[1], reverse=True)[:5]
-            logger.info("Top-5 attended FGs this epoch:")
             try:
                 from cage_fusion.chemistry.fg_utils import FG_NAMES
+                lines = ["Top-5 attended FGs:"]
                 for rank, (fg_id, w) in enumerate(top5, 1):
                     name = FG_NAMES[fg_id] if fg_id < len(FG_NAMES) else f"FG_{fg_id}"
-                    logger.info("  %d. %-25s avg=%.4f", rank, name, w)
+                    lines.append(f"  {rank}. {name:<25} avg={w:.4f}")
+                logger.info("\n".join(lines))
             except Exception:
                 pass
 
@@ -507,9 +508,12 @@ class Trainer:
             history[f"val_{metric}"].append(val[metric])
         history["per_task"].append(val.get("per_task", []))
         m = self.model
-        history["scale_graph"].append(getattr(m, "scale_graph", torch.tensor(0.0)).item() if hasattr(m, "scale_graph") else 0.0)
-        history["scale_attn"].append(getattr(m, "scale_attn", torch.tensor(0.0)).item() if hasattr(m, "scale_attn") else 0.0)
-        history["scale_aux"].append(getattr(m, "scale_aux", torch.tensor(0.0)).item() if hasattr(m, "scale_aux") else 0.0)
+        # Scalers live on CAGEFusionModel; task-head models (Classification/Regression)
+        # wrap it as `.encoder`, so check there first.
+        enc = getattr(m, "encoder", m)
+        history["scale_graph"].append(getattr(enc, "scale_graph", torch.tensor(0.0)).item() if hasattr(enc, "scale_graph") else 0.0)
+        history["scale_attn"].append(getattr(enc, "scale_attn", torch.tensor(0.0)).item() if hasattr(enc, "scale_attn") else 0.0)
+        history["scale_aux"].append(getattr(enc, "scale_aux", torch.tensor(0.0)).item() if hasattr(enc, "scale_aux") else 0.0)
         history["val_norm_graph"].append(val.get("norm_graph", 0.0))
         history["val_norm_attn"].append(val.get("norm_attn", 0.0))
         history["val_norm_aux"].append(val.get("norm_aux", 0.0))

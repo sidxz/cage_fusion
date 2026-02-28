@@ -1,6 +1,11 @@
 # cage_fusion/utils/hf_loader.py
 import os
+import transformers
 from transformers import AutoTokenizer, AutoModel
+
+# Suppress the verbose key-mismatch load report (UNEXPECTED/MISSING keys are
+# expected when loading an encoder-only backbone from a task-specific checkpoint).
+transformers.logging.set_verbosity_error()
 
 
 def _resolve_source(hf_id_or_dir: str):

@@ -77,3 +77,6 @@ temp/
 test/
 cache/
 cage_fusionv2/scratch/smiles-multilabel-checkpoints/
+notebooks/runs
+notebooks/.ipynb_checkpoints
+notebooks/data

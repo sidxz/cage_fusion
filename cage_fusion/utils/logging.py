@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import logging
 import os
+import sys
 from typing import List, Optional
 
 import matplotlib
@@ -27,6 +28,14 @@ from rich.logging import RichHandler
 from rich.table import Table
 from sklearn.metrics import confusion_matrix
 
+
+def _in_jupyter() -> bool:
+    try:
+        from IPython import get_ipython
+        return get_ipython() is not None
+    except ImportError:
+        return False
+
 try:
     from loguru import logger as _loguru_logger
     _LOGURU_AVAILABLE = True
@@ -37,27 +46,37 @@ except ImportError:
 # Logger setup
 # ---------------------------------------------------------------------------
 
-LOG_DIR = os.getenv("CAGE_FUSION_LOG_DIR", "/logs")
-os.makedirs(LOG_DIR, exist_ok=True)
-LOG_FILE = os.path.join(LOG_DIR, "cagefusion.log")
-
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(message)s",
-    handlers=[RichHandler(rich_tracebacks=True, markup=True, show_path=False)],
-)
+_DEFAULT_LOG_DIR = os.path.join(os.path.expanduser("~"), ".cache", "cage-fusion", "logs")
+LOG_DIR = os.getenv("CAGE_FUSION_LOG_DIR", _DEFAULT_LOG_DIR)
+try:
+    os.makedirs(LOG_DIR, exist_ok=True)
+    LOG_FILE: str | None = os.path.join(LOG_DIR, "cagefusion.log")
+except PermissionError:
+    LOG_FILE = None
 
 logger = logging.getLogger("cagefusion")
+logger.setLevel(logging.INFO)
+logger.propagate = False
+if not logger.handlers:
+    if _in_jupyter():
+        # Jupyter captures stderr writes as separate output blocks (very fragmented).
+        # Use a plain stdout handler instead — Jupyter batches stdout into one block.
+        _handler: logging.Handler = logging.StreamHandler(sys.stdout)
+        _handler.setFormatter(logging.Formatter("%(levelname)-8s %(message)s"))
+    else:
+        _handler = RichHandler(rich_tracebacks=True, markup=True, show_path=False)
+    logger.addHandler(_handler)
 
 if _LOGURU_AVAILABLE:
     _loguru_logger.remove()
-    _loguru_logger.add(
-        LOG_FILE,
-        rotation="10 MB",
-        level="DEBUG",
-        format="{time:YYYY-MM-DD HH:mm:ss} | {level} | {message}",
-        enqueue=True,
-    )
+    if LOG_FILE is not None:
+        _loguru_logger.add(
+            LOG_FILE,
+            rotation="10 MB",
+            level="DEBUG",
+            format="{time:YYYY-MM-DD HH:mm:ss} | {level} | {message}",
+            enqueue=True,
+        )
 
     class _PropagateToLoguru(logging.Handler):
         def emit(self, record):
@@ -73,7 +92,9 @@ if _LOGURU_AVAILABLE:
 # Console instance (shared across the package)
 # ---------------------------------------------------------------------------
 
-console = Console()
+# In Jupyter, point Rich's console at stdout so tables land in the same output
+# block as other log messages rather than appearing as separate stderr fragments.
+console = Console(file=sys.stdout if _in_jupyter() else None)
 
 
 # ---------------------------------------------------------------------------

@@ -3,17 +3,17 @@ requires = ["setuptools>=61.0"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "cage_fusion"
+name = "cage-fusion"
 version = "0.2.0"
 authors = [
   { name="Your Name", email="you@example.com" },
 ]
 description = "Multimodal molecular property prediction — HuggingFace-style API"
 readme = "README.md"
-requires-python = ">=3.8"
+requires-python = ">=3.11"
+license = "MIT"
 classifiers = [
     "Programming Language :: Python :: 3",
-    "License :: OSI Approved :: MIT License",
     "Operating System :: OS Independent",
 ]
 dependencies = [
@@ -25,10 +25,32 @@ dependencies = [
     "tqdm",
     "joblib",
     "transformers",
-    "huggingface_hub",
-    "chemprop",
-    "rdkit"
+    "huggingface-hub",
+    "chemprop>=2.2.0",
+    "rdkit>=2024.09",
+    "matplotlib",
+    "seaborn",
+    "pillow",
+    "rich",
+    "loguru",
+    "fastapi",
+    "uvicorn",
+    "hf-transfer",
 ]
+
+[dependency-groups]
+dev = ["deepchem"]
+
+[tool.setuptools.packages.find]
+include = ["cage_fusion*"]
 
 [tool.setuptools.package-data]
 cage_fusion = ["py.typed"]
+
+[[tool.uv.index]]
+name = "pytorch-cu124"
+url = "https://download.pytorch.org/whl/cu124"
+explicit = true
+
+[tool.uv.sources]
+torch = { index = "pytorch-cu124" }

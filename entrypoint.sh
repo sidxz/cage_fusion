@@ -13,16 +13,16 @@ err() { log "${RED}" "$1"; }
 : "${CHECKPOINT_DIR:=/checkpoints/nuisance-pred}"
 : "${MODEL_NAME:=Cross-Prompt-Phased-bert-251020}"
 : "${MODEL_FILE:=latest_checkpoint.pt}"
-: "${HF_HOME:=/home/mamba/.cache/huggingface}"
+: "${HF_HOME:=/home/appuser/.cache/huggingface}"
 : "${PORT:=10002}"
 : "${WORKERS:=1}"
 : "${MODEL_CHECKPOINT_OVERRIDE:=}"              # e.g., "DeepChem/ChemBERTa-77M-MTR"
 : "${HF_ENDPOINT:=https://huggingface.co}"
 : "${HF_TOKEN:=}"
 
-# ---------- DEV TOGGLES (new) ----------
+# ---------- DEV TOGGLES ----------
 : "${DEV_HOT_RELOAD:=0}"        # 1 -> uvicorn --reload and watch source dirs
-: "${RELOAD_DIRS:=/home/mamba/cage_fusion}"    # comma-separated or single path
+: "${RELOAD_DIRS:=/home/appuser/cage_fusion}"    # comma-separated or single path
 : "${SKIP_HF_WARM:=0}"          # 1 -> skip snapshot_download + offline test
 : "${SKIP_OFFLINE_TEST:=0}"     # 1 -> skip transformers offline self-test
 : "${UVICORN_APP:=cage_fusion.api.fast_router:app}"  # override target if needed
@@ -66,7 +66,7 @@ HF_RESOLVED_DIR=""
 if [[ "${SKIP_HF_WARM}" != "1" ]]; then
   # ---------- Resolve HF repo id from config (or override) ----------
   ok "Resolving HF backbone from config…"
-  HF_ID=$(micromamba run -n cage-fusion python - <<'PY'
+  HF_ID=$(python - <<'PY'
 from cage_fusion.configs import get_default_config
 cfg = get_default_config()
 print((cfg.get("model_checkpoint") or "").strip())
@@ -79,9 +79,8 @@ PY
 
   # ---------- Warm the cache and capture the resolved local directory ----------
   ok "Warming HF cache for ${HF_ID}…"
-  export HF_ID
   HF_RESOLVED_DIR=$(
-    micromamba run -n cage-fusion env HF_ID="$HF_ID" HF_TOKEN="$HF_TOKEN" python - <<'PY'
+    HF_ID="$HF_ID" HF_TOKEN="$HF_TOKEN" python - <<'PY'
 import os
 from huggingface_hub import snapshot_download
 local_dir = snapshot_download(repo_id=os.environ["HF_ID"],
@@ -97,7 +96,7 @@ PY
   # ---------- OFFLINE TEST: ensure we can load from local snapshot ----------
   if [[ "${SKIP_OFFLINE_TEST}" != "1" ]]; then
     ok "Offline self-test (transformers)…"
-    micromamba run -n cage-fusion env HF_RESOLVED_DIR="$HF_RESOLVED_DIR" python - <<'PY'
+    HF_RESOLVED_DIR="$HF_RESOLVED_DIR" python - <<'PY'
 import os
 from pathlib import Path
 from transformers import AutoTokenizer, AutoModel
@@ -126,7 +125,7 @@ ok "Transformers set to OFFLINE mode."
 
 # ---------- Torch diag (non-fatal) ----------
 ok "Torch diagnostics:"
-micromamba run -n cage-fusion python - <<'PY' || true
+python - <<'PY' || true
 import torch
 print("Torch:", torch.__version__, "CUDA available:", torch.cuda.is_available())
 if torch.cuda.is_available():
@@ -138,7 +137,7 @@ ok "Starting Uvicorn…"
 
 UVICORN_ARGS=( "${UVICORN_APP}" --host 0.0.0.0 --port "${PORT}" --workers "${WORKERS}" )
 
-# DEV hot reload path (new)
+# DEV hot reload path
 if [[ "${DEV_HOT_RELOAD}" == "1" ]]; then
   warn "DEV_HOT_RELOAD enabled: forcing --reload and workers=1"
   UVICORN_ARGS=( "${UVICORN_APP}" --host 0.0.0.0 --port "${PORT}" --reload )
@@ -149,6 +148,4 @@ if [[ "${DEV_HOT_RELOAD}" == "1" ]]; then
   done
 fi
 
-exec micromamba run -n cage-fusion \
-  env HF_RESOLVED_DIR="${HF_RESOLVED_DIR}" TRANSFORMERS_OFFLINE="${TRANSFORMERS_OFFLINE}" HF_HUB_OFFLINE="${HF_HUB_OFFLINE}" \
-  uvicorn "${UVICORN_ARGS[@]}"
+exec uvicorn "${UVICORN_ARGS[@]}"

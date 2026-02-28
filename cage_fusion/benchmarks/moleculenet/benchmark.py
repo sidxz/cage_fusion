@@ -46,6 +46,7 @@ def run_moleculenet_benchmark(
     learning_rate: float = 3e-4,
     attn_mode: str = "cross",
     use_fg_prompt: bool = True,
+    co_attention_layers: int = 1,
     config: Optional[CageFusionConfig] = None,
     training_args: Optional[TrainingArguments] = None,
     data_dir: str = "data/molnet",
@@ -125,6 +126,7 @@ def run_moleculenet_benchmark(
             model_checkpoint=model_checkpoint,
             attn_mode=attn_mode,
             use_fg_prompt=use_fg_prompt,
+            co_attention_layers=co_attention_layers,
         )
 
     logger.info("Building model: %s", config)

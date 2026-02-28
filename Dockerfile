@@ -1,26 +1,31 @@
 # Base with CUDA libs for GPU inference. For CPU-only, use debian-slim or python base.
-#FROM nvidia/cuda:12.4.1-runtime-ubuntu22.04
 FROM pytorch/pytorch:2.6.0-cuda12.4-cudnn9-runtime
-# Micromamba bootstrap (tiny and fast)
-ARG MAMBA_USER=mamba
+
+ARG APP_USER=appuser
 SHELL ["/bin/bash", "-o", "pipefail", "-c"]
-RUN apt-get update && apt-get install -y curl ca-certificates bzip2 && rm -rf /var/lib/apt/lists/*
-RUN useradd -m ${MAMBA_USER}
-USER ${MAMBA_USER}
-WORKDIR /home/${MAMBA_USER}
 
-# Install micromamba
-RUN curl -L https://micro.mamba.pm/api/micromamba/linux-64/latest | tar -xvj bin/micromamba
+RUN apt-get update && apt-get install -y ca-certificates && rm -rf /var/lib/apt/lists/*
 
-ENV MAMBA_ROOT_PREFIX=/home/${MAMBA_USER}/mamba
-ENV PATH=/home/${MAMBA_USER}/bin:$PATH
-ENV MAMBA_DOCKERFILE_ACTIVATE=1
-# Copy env and create it
-COPY --chown=${MAMBA_USER}:${MAMBA_USER} environment.yml /home/${MAMBA_USER}/environment.yml
-RUN ./bin/micromamba create -y -n cage-fusion -f environment.yml
+# Install uv
+COPY --from=ghcr.io/astral-sh/uv:latest /uv /uvx /bin/
 
-# Copy your code
-COPY --chown=${MAMBA_USER}:${MAMBA_USER} cage_fusion /home/${MAMBA_USER}/cage_fusion
+RUN useradd -m ${APP_USER}
+USER ${APP_USER}
+WORKDIR /home/${APP_USER}
+
+# Copy project files for dependency installation (rebuild layer only when these change)
+COPY --chown=${APP_USER}:${APP_USER} pyproject.toml uv.lock ./
+
+# Create venv inheriting system site-packages (torch already in base image with CUDA support).
+# --no-install-package torch skips re-downloading torch (~2 GB).
+RUN uv venv --system-site-packages .venv && \
+    uv sync --frozen --no-dev --no-install-package torch
+
+ENV VIRTUAL_ENV=/home/appuser/.venv
+ENV PATH="/home/appuser/.venv/bin:$PATH"
+
+# Copy application code
+COPY --chown=${APP_USER}:${APP_USER} cage_fusion ./cage_fusion
 
 # Runtime env vars
 ENV CHECKPOINT_DIR=/checkpoints/nuisance-pred \
@@ -30,30 +35,23 @@ ENV CHECKPOINT_DIR=/checkpoints/nuisance-pred \
     TOKENIZERS_PARALLELISM=false \
     OMP_NUM_THREADS=1 \
     MKL_NUM_THREADS=1 \
-    HF_HOME=/home/${MAMBA_USER}/.cache/huggingface \
-    HF_HUB_CACHE=/home/${MAMBA_USER}/.cache/huggingface/hub \
+    HF_HOME=/home/appuser/.cache/huggingface \
+    HF_HUB_CACHE=/home/appuser/.cache/huggingface/hub \
     HF_HUB_ENABLE_HF_TRANSFER=1 \
     PORT=10002 \
     WORKERS=1 \
     NVIDIA_VISIBLE_DEVICES=all \
     NVIDIA_DRIVER_CAPABILITIES=compute,utility
 
-RUN ./bin/micromamba install -y -n cage-fusion -c conda-forge \
-    libstdcxx-ng libgcc-ng
-
-# Fix SciPy/sklearn C++ ABI mismatch (CXXABI_1.3.15)
-ENV LD_LIBRARY_PATH=/home/mamba/mamba/envs/cage-fusion/lib:${LD_LIBRARY_PATH}
-
-RUN ./bin/micromamba run -n cage-fusion python - <<'PY'
+# Sanity-check C++ ABI compatibility
+RUN python - <<'PY'
 import scipy, sklearn
 print("OK: scipy/sklearn import succeeded")
 PY
 
-    # ---- Startup script (does HF cache warm + launches uvicorn) ----
-COPY --chown=${MAMBA_USER}:${MAMBA_USER} entrypoint.sh /home/${MAMBA_USER}/entrypoint.sh
-RUN chmod +x /home/${MAMBA_USER}/entrypoint.sh
+COPY --chown=${APP_USER}:${APP_USER} entrypoint.sh ./entrypoint.sh
+RUN chmod +x ./entrypoint.sh
 
 EXPOSE 10002
 
-# Use the startup script (auto-activates env via micromamba run)
-ENTRYPOINT ["/home/mamba/entrypoint.sh"]
+ENTRYPOINT ["./entrypoint.sh"]

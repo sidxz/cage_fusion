@@ -455,11 +455,13 @@ class CAGEFusionModel(CAGEFusionPreTrainedModel):
             hidden_states=hidden_states,
             attn_entropy_loss=torch.tensor(0.0, device=dev),
             token_prior_loss=torch.tensor(0.0, device=dev),
-            graph_to_token_weights=g2t_weights    if return_attn else None,
-            token_to_graph_weights=t2g_weights    if return_attn else None,
-            attn_output=attn_output               if return_attn else None,
-            graph_repr=graph_repr                 if return_attn else None,
-            atom_features=atom_features           if return_attn else None,
+            # graph_repr and attn_output are compact [B, dim] tensors always needed
+            # for norm tracking; only gate the large weight matrices behind return_attn.
+            graph_repr=graph_repr,
+            attn_output=attn_output,
+            graph_to_token_weights=g2t_weights  if return_attn else None,
+            token_to_graph_weights=t2g_weights  if return_attn else None,
+            atom_features=atom_features         if return_attn else None,
             prompt_attn_weights=prompt_attn_weights,
         )
 

@@ -167,7 +167,7 @@ class CageFusionDataModule:
             )
         """
         # Normalise SMILES column name
-        for df in filter(None, [train_df, val_df, test_df]):
+        for df in [d for d in [train_df, val_df, test_df] if d is not None]:
             if smiles_col != "SMILES" and smiles_col in df.columns:
                 df.rename(columns={smiles_col: "SMILES"}, inplace=True)
 
