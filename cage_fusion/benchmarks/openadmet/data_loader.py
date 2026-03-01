@@ -138,6 +138,18 @@ def load_openadmet(cache_dir: str = "/data-1/cage-fusion-admet/datasets") -> tup
     train_df = ds["train"].to_pandas()
     test_df  = ds["test"].to_pandas()
 
+    # Normalise column names: HuggingFace uses spaces / special chars;
+    # rename to underscore-based names used throughout this codebase.
+    _RENAME = {
+        "Molecule Name":                   "Molecule_Name",
+        "HLM CLint":                       "HLM_CLint",
+        "MLM CLint":                       "MLM_CLint",
+        "Caco-2 Permeability Papp A>B":    "Caco-2_Permeability_Papp_A_B",
+        "Caco-2 Permeability Efflux":      "Caco-2_Permeability_Efflux",
+    }
+    train_df = train_df.rename(columns=_RENAME)
+    test_df  = test_df.rename(columns=_RENAME)
+
     logger.info(
         "OpenADMET loaded: %d train / %d test molecules",
         len(train_df), len(test_df),

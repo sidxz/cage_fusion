@@ -103,8 +103,12 @@ class CAGEFusionPreTrainedModel(nn.Module):
 
     def save_pretrained(self, save_directory: str) -> None:
         """
-        Save model weights (``pytorch_model.bin``) and config (``config.json``)
-        into *save_directory*.
+        Save model weights (``pytorch_model.bin``), backbone weights
+        (``backbone.bin``), and config (``config.json``) into *save_directory*.
+
+        Both files are always written together so every checkpoint is usable
+        for either same-task fine-tuning (``from_pretrained``) or cross-task
+        transfer (``from_backbone``).
 
         Args:
             save_directory: Local path. Created if it does not exist.
@@ -117,6 +121,7 @@ class CAGEFusionPreTrainedModel(nn.Module):
         self.config.save_pretrained(save_directory)
         weight_path = os.path.join(save_directory, "pytorch_model.bin")
         torch.save(self.state_dict(), weight_path)
+        self.save_backbone(save_directory)
         logger.info("Saved model to %s", save_directory)
 
     @classmethod
@@ -125,6 +130,7 @@ class CAGEFusionPreTrainedModel(nn.Module):
         pretrained_model_name_or_path: str,
         config: Optional[CageFusionConfig] = None,
         strict: bool = True,
+        show_load_report: bool = True,
         **kwargs,
     ) -> "CAGEFusionPreTrainedModel":
         """
@@ -138,6 +144,8 @@ class CAGEFusionPreTrainedModel(nn.Module):
             config: Optional pre-built config; loaded from ``config.json`` if omitted.
             strict: Passed to :meth:`~torch.nn.Module.load_state_dict`.
                     Use ``False`` when swapping task heads.
+            show_load_report: Print a rich table summarizing which components
+                were loaded from checkpoint vs. freshly initialized.
             **kwargs: Forwarded to the model constructor.
 
         Returns:
@@ -161,10 +169,13 @@ class CAGEFusionPreTrainedModel(nn.Module):
         if os.path.isfile(weight_path):
             state_dict = torch.load(weight_path, map_location="cpu", weights_only=True)
             missing, unexpected = model.load_state_dict(state_dict, strict=strict)
-            if missing:
-                logger.warning("Missing weights: %s", missing[:5])
-            if unexpected:
-                logger.warning("Unexpected weights: %s", unexpected[:5])
+            if show_load_report:
+                cls._load_report(state_dict, missing, unexpected, [], model)
+            else:
+                if missing:
+                    logger.warning("Missing weights: %s", missing[:5])
+                if unexpected:
+                    logger.warning("Unexpected weights: %s", unexpected[:5])
         else:
             logger.warning(
                 "No pytorch_model.bin in '%s'; returning randomly initialised model.",
@@ -175,7 +186,118 @@ class CAGEFusionPreTrainedModel(nn.Module):
     # ── Transfer-learning helpers ─────────────────────────────────────────────
 
     #: Parameter name prefixes that belong to the task head, not the backbone.
-    _HEAD_PREFIXES: tuple = ("classifier.", "regressor.")
+    #: ChemProp's D-MPNN embeds an internal task-specific predictor sized by
+    #: num_labels — excluded so backbone.bin is universally loadable.
+    _HEAD_PREFIXES: tuple = (
+        "classifier.",
+        "regressor.",
+        "encoder.graph_encoder._mpnn.predictor.",
+        "encoder.graph_encoder._mpnn.metrics.",
+    )
+
+    @staticmethod
+    def _load_report(
+        state: dict,
+        missing: list,
+        unexpected: list,
+        shape_skipped: list,
+        model: "CAGEFusionPreTrainedModel",
+    ) -> None:
+        """Print a rich table showing which components were loaded from checkpoint."""
+        from rich import box as rich_box
+        from rich.console import Console
+        from rich.table import Table
+
+        _SUBMODULE_LABELS = {
+            "graph_encoder":  "Graph encoder (D-MPNN)",
+            "graph_proj":     "Graph projection",
+            "embedding_proj": "Sequence projection (ChemBERTa)",
+            "both_proj":      "Self-attn both projection",
+            "co_attn_layers": "Co-attention layers",
+            "aux_mlp":        "Auxiliary feature MLP",
+            "fg_prompter":    "Functional group prompt",
+            "fusion":         "Fusion MLP",
+            "scale_graph":    "Scale params (graph/attn/aux/fg)",
+            "scale_attn":     "(merged above)",
+            "scale_aux":      "(merged above)",
+            "alpha":          "(merged above)",
+        }
+        _SCALE_GROUP = {"scale_graph", "scale_attn", "scale_aux", "alpha"}
+
+        def _subkey(k: str) -> str:
+            parts = k.split(".")
+            # encoder.graph_encoder.xxx  → graph_encoder
+            # classifier.weight          → classifier
+            if parts[0] == "encoder" and len(parts) > 1:
+                return parts[1]
+            return parts[0]
+
+        loaded: dict[str, int] = {}
+        scale_params = 0
+        for k, v in state.items():
+            sub = _subkey(k)
+            if sub in _SCALE_GROUP:
+                scale_params += v.numel()
+            else:
+                loaded.setdefault(sub, 0)
+                loaded[sub] += v.numel()
+        if scale_params:
+            loaded["scale_graph"] = scale_params
+
+        fresh: dict[str, int] = {}
+        model_sd = model.state_dict()
+        for k in list(missing) + list(shape_skipped or []):
+            sub = _subkey(k)
+            fresh.setdefault(sub, 0)
+            if k in model_sd:
+                fresh[sub] += model_sd[k].numel()
+
+        total_loaded = sum(loaded.values())
+        total_fresh  = sum(fresh.values())
+
+        console = Console()
+        table = Table(
+            title="[bold cyan]Pretrained Weights — Load Report[/bold cyan]",
+            box=rich_box.ROUNDED,
+            border_style="cyan",
+            header_style="bold",
+            show_header=True,
+        )
+        table.add_column("Component",  min_width=36)
+        table.add_column("Source",     justify="center", min_width=22)
+        table.add_column("Parameters", justify="right",  min_width=12)
+
+        for sub, n in sorted(loaded.items()):
+            if _SUBMODULE_LABELS.get(sub) == "(merged above)":
+                continue
+            label = _SUBMODULE_LABELS.get(sub, sub)
+            table.add_row(label, "[green]checkpoint[/green]", f"{n:,}")
+
+        for sub, n in sorted(fresh.items()):
+            table.add_row(sub, "[yellow]fresh init[/yellow]", f"{n:,}")
+
+        for k in unexpected:
+            table.add_row(k, "[red]unexpected / skipped[/red]", "—")
+
+        if shape_skipped:
+            table.add_row(
+                f"[dim]{len(shape_skipped)} shape-mismatched keys[/dim]",
+                "[dim]re-initialized[/dim]", "—",
+            )
+
+        table.add_section()
+        table.add_row(
+            "[bold]Total from checkpoint[/bold]", "",
+            f"[green]{total_loaded:,}[/green]",
+        )
+        table.add_row(
+            "[bold]Total fresh init[/bold]", "",
+            f"[yellow]{total_fresh:,}[/yellow]",
+        )
+
+        console.print()
+        console.print(table)
+        console.print()
 
     def freeze_backbone(self) -> None:
         """Freeze all encoder weights; leave only the task head trainable.
@@ -239,6 +361,94 @@ class CAGEFusionPreTrainedModel(nn.Module):
             "Saved backbone (%d tensors) to %s",
             len(backbone_state), save_directory,
         )
+
+    @classmethod
+    def from_backbone(
+        cls,
+        backbone_path_or_dir: str,
+        config: CageFusionConfig,
+        device=None,
+    ) -> "CAGEFusionPreTrainedModel":
+        """Load encoder weights from backbone.bin; task head is randomly initialized.
+
+        Use this for cross-task transfer: the encoder is warm-started from a
+        pretrained checkpoint while the task head is freshly initialized.
+
+        Args:
+            backbone_path_or_dir: One of:
+                - Path to a ``backbone.bin`` file directly.
+                - A local directory containing ``backbone.bin``.
+                - A HuggingFace Hub repo ID (``backbone.bin`` is downloaded).
+            config: :class:`~cage_fusion.configuration.CageFusionConfig` for the
+                new task — sets ``num_labels``, ``model_task``, etc.
+            device: ``torch.device`` or ``None`` (uses CUDA when available).
+
+        Returns:
+            Model with encoder weights from the checkpoint and freshly initialized
+            task head — ready for fine-tuning.
+
+        Example::
+
+            # Cross-task transfer from a pretrained regression backbone:
+            new_config = CageFusionConfig(
+                num_labels=4, model_task="classification",
+                label_names=["PAINS_A", "PAINS_B", "Aggregator", "Promiscuous"],
+                hidden_size=128, ...
+            )
+            model = AutoCageFusion.from_backbone(
+                "cage-fusion/cage-fusion-pretrained", new_config
+            )
+            model.freeze_backbone()   # train head first
+            trainer.train()
+        """
+        # ── Resolve backbone.bin path ─────────────────────────────────────────
+        if os.path.isfile(backbone_path_or_dir):
+            backbone_path = backbone_path_or_dir
+        elif os.path.isdir(backbone_path_or_dir):
+            backbone_path = os.path.join(backbone_path_or_dir, "backbone.bin")
+        else:
+            try:
+                from huggingface_hub import hf_hub_download
+                backbone_path = hf_hub_download(
+                    repo_id=backbone_path_or_dir, filename="backbone.bin"
+                )
+            except Exception as exc:
+                raise FileNotFoundError(
+                    f"backbone.bin not found at '{backbone_path_or_dir}': {exc}"
+                ) from exc
+
+        if not os.path.isfile(backbone_path):
+            raise FileNotFoundError(f"backbone.bin not found at '{backbone_path}'")
+
+        # ── Load weights ──────────────────────────────────────────────────────
+        state = torch.load(backbone_path, map_location="cpu", weights_only=True)
+        model = cls(config)
+        model_sd = model.state_dict()
+
+        shape_skipped = [
+            k for k, v in state.items()
+            if k in model_sd and v.shape != model_sd[k].shape
+        ]
+        compatible = {k: v for k, v in state.items() if k not in shape_skipped}
+        missing, unexpected = model.load_state_dict(compatible, strict=False)
+
+        cls._load_report(compatible, missing, unexpected, shape_skipped, model)
+
+        # ── Warn: head needs training ─────────────────────────────────────────
+        head_params = sum(
+            p.numel() for n, p in model.named_parameters()
+            if any(n.startswith(pfx) for pfx in cls._HEAD_PREFIXES)
+        )
+        logger.warning(
+            "Backbone loaded — task head (%s params) is randomly initialized. "
+            "Run at least a few training epochs before inference.",
+            f"{head_params:,}",
+        )
+
+        if device is not None:
+            model = model.to(device)
+
+        return model
 
     @classmethod
     def from_checkpoint(

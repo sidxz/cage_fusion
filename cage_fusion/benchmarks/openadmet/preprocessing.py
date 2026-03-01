@@ -10,10 +10,10 @@ and ``inverse_transform`` to model predictions before writing submission.csv.
 Transform table
 ---------------
 LogD                         — none        (already log-scale)
-KSOL                         — log10(1e-6·y + 1)
+KSOL                         — log10(y + 1)
 HLM_CLint                    — log10(y + 1)
 MLM_CLint                    — log10(y + 1)
-Caco-2_Permeability_Papp_A_B — log10(1e-6·y + 1)
+Caco-2_Permeability_Papp_A_B — log10(y + 1)
 Caco-2_Permeability_Efflux   — log10(y + 1)
 MPPB                         — log10(y + 1)
 MBPB                         — log10(y + 1)
@@ -47,10 +47,10 @@ NAME_COL   = "Molecule_Name"
 # "log1p" → log10(multiplier * y + 1)   (clips to 0 first for safety)
 _TRANSFORM_TABLE: dict[str, tuple[str, float]] = {
     "LogD":                         ("none",  1.0),
-    "KSOL":                         ("log1p", 1e-6),
+    "KSOL":                         ("log1p", 1.0),
     "HLM_CLint":                    ("log1p", 1.0),
     "MLM_CLint":                    ("log1p", 1.0),
-    "Caco-2_Permeability_Papp_A_B": ("log1p", 1e-6),
+    "Caco-2_Permeability_Papp_A_B": ("log1p", 1.0),
     "Caco-2_Permeability_Efflux":   ("log1p", 1.0),
     "MPPB":                         ("log1p", 1.0),
     "MBPB":                         ("log1p", 1.0),

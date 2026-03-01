@@ -108,6 +108,46 @@ class AutoCageFusion:
         return model_cls(config)
 
     @classmethod
+    def from_backbone(
+        cls,
+        backbone_path_or_dir: str,
+        config: CageFusionConfig,
+        device=None,
+    ) -> CAGEFusionPreTrainedModel:
+        """
+        Cross-task transfer: load encoder from ``backbone.bin``, freshly initialize
+        the task head for *config.model_task*.
+
+        Args:
+            backbone_path_or_dir: Path to ``backbone.bin``, a directory containing
+                it, or a HuggingFace Hub repo ID.
+            config: :class:`~cage_fusion.configuration.CageFusionConfig` for the
+                new task — sets ``model_task``, ``num_labels``, etc.
+            device: ``torch.device`` or ``None``.
+
+        Returns:
+            Model with encoder weights from checkpoint and fresh task head.
+
+        Example::
+
+            new_config = CageFusionConfig(
+                num_labels=4, model_task="classification",
+                label_names=["PAINS_A", "PAINS_B", "Aggregator", "Promiscuous"],
+                hidden_size=128, ...
+            )
+            model = AutoCageFusion.from_backbone(
+                "cage-fusion/cage-fusion-pretrained", new_config
+            )
+        """
+        model_cls = _TASK_TO_CLASS.get(config.model_task)
+        if model_cls is None:
+            raise ValueError(
+                f"Unknown model_task '{config.model_task}'. "
+                f"Supported: {list(_TASK_TO_CLASS)}"
+            )
+        return model_cls.from_backbone(backbone_path_or_dir, config, device=device)
+
+    @classmethod
     def from_pretrained(
         cls,
         pretrained_model_name_or_path: str,

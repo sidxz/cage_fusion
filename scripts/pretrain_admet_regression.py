@@ -61,99 +61,6 @@ logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("pretrain_admet")
 
 
-# ── Checkpoint load report ────────────────────────────────────────────────────
-
-_SUBMODULE_LABELS = {
-    "graph_encoder":  "Graph encoder (D-MPNN)",
-    "graph_proj":     "Graph projection",
-    "embedding_proj": "Sequence projection (ChemBERTa)",
-    "both_proj":      "Self-attn both projection",
-    "co_attn_layers": "Co-attention layers",
-    "aux_mlp":        "Auxiliary feature MLP",
-    "fg_prompter":    "Functional group prompt",
-    "fusion":         "Fusion MLP",
-    "scale_graph":    "Scale params (graph/attn/aux/fg)",
-    "scale_attn":     "(merged above)",
-    "scale_aux":      "(merged above)",
-    "alpha":          "(merged above)",
-}
-_SCALE_GROUP = {"scale_graph", "scale_attn", "scale_aux", "alpha"}
-
-
-def _print_checkpoint_report(
-    state: dict, missing: list, unexpected: list, model,
-    shape_skipped: list | None = None,
-) -> None:
-    """Print a rich table showing which components were loaded from checkpoint."""
-    from rich import box as rich_box
-    from rich.console import Console
-    from rich.table import Table
-
-    # Group loaded params by submodule (keys are "encoder.<sub>.<rest>")
-    loaded: dict[str, int] = {}
-    scale_params = 0
-    for k, v in state.items():
-        parts = k.split(".")
-        sub = parts[1] if len(parts) > 1 else parts[0]
-        if sub in _SCALE_GROUP:
-            scale_params += v.numel()
-        else:
-            loaded.setdefault(sub, 0)
-            loaded[sub] += v.numel()
-    if scale_params:
-        loaded["scale_graph"] = scale_params
-
-    # Group freshly-initialised params (missing keys + shape-skipped keys)
-    fresh: dict[str, int] = {}
-    model_sd = model.state_dict()
-    for k in list(missing) + list(shape_skipped or []):
-        sub = k.split(".")[0]
-        fresh.setdefault(sub, 0)
-        if k in model_sd:
-            fresh[sub] += model_sd[k].numel()
-
-    total_loaded = sum(loaded.values())
-    total_fresh  = sum(fresh.values())
-
-    console = Console()
-    table = Table(
-        title="[bold cyan]Pretrained Encoder Weights — Load Report[/bold cyan]",
-        box=rich_box.ROUNDED,
-        border_style="cyan",
-        header_style="bold",
-        show_header=True,
-    )
-    table.add_column("Component",  min_width=36)
-    table.add_column("Source",     justify="center", min_width=22)
-    table.add_column("Parameters", justify="right",  min_width=12)
-
-    for sub, n in sorted(loaded.items()):
-        if _SUBMODULE_LABELS.get(sub) == "(merged above)":
-            continue
-        label = _SUBMODULE_LABELS.get(sub, sub)
-        table.add_row(label, "[green]checkpoint[/green]", f"{n:,}")
-
-    for sub, n in sorted(fresh.items()):
-        table.add_row(sub, "[yellow]fresh init[/yellow]", f"{n:,}")
-
-    for k in unexpected:
-        table.add_row(k, "[red]unexpected / skipped[/red]", "—")
-
-    if shape_skipped:
-        table.add_row(
-            f"[dim]{len(shape_skipped)} shape-mismatched keys[/dim]",
-            "[dim]re-initialized[/dim]", "—",
-        )
-
-    table.add_section()
-    table.add_row("[bold]Total from checkpoint[/bold]", "", f"[green]{total_loaded:,}[/green]")
-    table.add_row("[bold]Total fresh init[/bold]",      "", f"[yellow]{total_fresh:,}[/yellow]")
-
-    console.print()
-    console.print(table)
-    console.print()
-
-
 # ── Directories ───────────────────────────────────────────────────────────────
 
 ROOT          = "/data-1/cage-fusion-pretrain/regression"
@@ -264,28 +171,10 @@ def main():
     logger.info("Device: %s", device)
 
     config = build_config(len(label_cols), label_cols)
-    model  = AutoCageFusion.from_config(config).to(device)
-
-    # Optionally warm-start encoder from a prior pretraining checkpoint
     if args.init_from_backbone:
-        if os.path.isfile(args.init_from_backbone):
-            state = torch.load(args.init_from_backbone, map_location="cpu")
-            # Filter shape-mismatched keys (e.g. graph encoder's task-specific
-            # predictor head, which is sized by num_labels in the source task)
-            model_sd = model.state_dict()
-            shape_skipped = [
-                k for k, v in state.items()
-                if k in model_sd and v.shape != model_sd[k].shape
-            ]
-            compatible = {
-                k: v for k, v in state.items()
-                if k not in shape_skipped
-            }
-            missing, unexpected = model.load_state_dict(compatible, strict=False)
-            _print_checkpoint_report(compatible, missing, unexpected, model,
-                                     shape_skipped=shape_skipped)
-        else:
-            logger.warning("--init-from-backbone path not found: %s", args.init_from_backbone)
+        model = AutoCageFusion.from_backbone(args.init_from_backbone, config, device=device)
+    else:
+        model = AutoCageFusion.from_config(config).to(device)
 
     total     = sum(p.numel() for p in model.parameters())
     trainable = sum(p.numel() for p in model.parameters() if p.requires_grad)

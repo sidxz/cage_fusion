@@ -104,7 +104,7 @@ def parse_args():
     p = argparse.ArgumentParser(description="CAGEFusion OpenADMET fine-tuning")
     p.add_argument("--epochs-A",      type=int,   default=5,
                    help="Head-warmup epochs (backbone frozen).")
-    p.add_argument("--epochs-B",      type=int,   default=80,
+    p.add_argument("--epochs-B",      type=int,   default=35,
                    help="Full fine-tuning epochs (backbone unfrozen).")
     p.add_argument("--lr-A",          type=float, default=1e-3,
                    help="Learning rate for Phase A.")
@@ -134,35 +134,34 @@ def main():
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     logger.info("Device: %s", device)
 
-    # ── 1. Load official train / test DataFrames ──────────────────────────────
-    train_raw, test_df = load_openadmet(
+    # ── 1. Load official training DataFrame only ──────────────────────────────
+    # The test set is never loaded here — it is handled exclusively by
+    # evaluate_openadmet.py after training is complete.
+    train_raw, _ = load_openadmet(
         cache_dir=os.path.join(ROOT, "datasets")
     )
 
     # ── 2. Log-transform label columns (forward transform) ────────────────────
     train_raw = forward_transform(train_raw, cols=LABEL_COLS)
-    test_df   = forward_transform(test_df,   cols=LABEL_COLS)
 
     # ── 3. Carve validation set from training data ────────────────────────────
-    # The official test split is time-based and must NOT be used for early stopping.
-    # We carve a random 15% val split from training for hyperparameter selection.
+    # We hold out a small fraction for early stopping / checkpoint selection.
+    # The official test set is never touched during training.
     train_df, val_df = train_test_split(
         train_raw, test_size=args.val_split, random_state=args.seed
     )
     train_df = train_df.reset_index(drop=True)
     val_df   = val_df.reset_index(drop=True)
-    test_df  = test_df.reset_index(drop=True)
 
     logger.info(
-        "Split: %d train / %d val / %d test (official)",
-        len(train_df), len(val_df), len(test_df),
+        "Split: %d train / %d val (official test set withheld)",
+        len(train_df), len(val_df),
     )
 
     # ── 4. Build data module ──────────────────────────────────────────────────
     dm = CageFusionDataModule.from_dataframes(
         train_df=train_df,
         val_df=val_df,
-        test_df=test_df,
         label_cols=LABEL_COLS,
         model_checkpoint=MODEL_CHECKPOINT,
         cache_dir=FEATURE_DIR,
@@ -181,17 +180,12 @@ def main():
         if not os.path.isdir(pretrain_ckpt):
             logger.warning(
                 "Pretrained checkpoint not found at '%s'. "
-                "Run scripts/pretrain_admet.py first, or use --from-scratch.",
+                "Run scripts/pretrain_admet_regression.py first, or use --from-scratch.",
                 pretrain_ckpt,
             )
             sys.exit(1)
         logger.info("Loading pretrained backbone from %s", pretrain_ckpt)
-        from cage_fusion.modeling.modeling_cage import CAGEFusionForRegression
-        model = CAGEFusionForRegression.from_pretrained(
-            pretrain_ckpt,
-            config=config,
-            strict=False,   # head shape mismatch expected (N→9 labels)
-        ).to(device)
+        model = AutoCageFusion.from_backbone(pretrain_ckpt, config, device=device)
 
     total     = sum(p.numel() for p in model.parameters())
     trainable = sum(p.numel() for p in model.parameters() if p.requires_grad)
