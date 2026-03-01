@@ -94,8 +94,8 @@ class CageFusionDataModule:
 
     def __init__(
         self,
-        train_loader: DataLoader,
-        val_loader: DataLoader,
+        train_loader: Optional[DataLoader],
+        val_loader: Optional[DataLoader],
         label_names: List[str],
         *,
         test_loader: Optional[DataLoader] = None,
@@ -261,6 +261,7 @@ class CageFusionDataModule:
         cache_dir: str = ".cache/features",
         batch_size: int = 128,
         num_workers: int = 0,
+        scaler=None,
     ) -> "CageFusionDataModule":
         """
         Build a data module from a single CSV file.
@@ -323,6 +324,91 @@ class CageFusionDataModule:
             cache_dir=cache_dir,
             batch_size=batch_size,
             num_workers=num_workers,
+            scaler=scaler,
+        )
+
+    # ------------------------------------------------------------------
+    # Inference-only convenience
+    # ------------------------------------------------------------------
+
+    @classmethod
+    def for_inference(
+        cls,
+        csv_path: str,
+        label_cols: List[str],
+        model_checkpoint: str = "DeepChem/ChemBERTa-77M-MTR",
+        *,
+        smiles_col: str = "SMILES",
+        cache_dir: str = ".cache/features",
+        batch_size: int = 128,
+        num_workers: int = 0,
+        scaler=None,
+    ) -> "CageFusionDataModule":
+        """
+        Build a data module for inference only — no train/val split.
+
+        All rows in *csv_path* are featurised and exposed via
+        :attr:`test_loader`.  Pass a pre-fitted *scaler* (from the
+        training ``CageFusionDataModule``) so auxiliary features are
+        transformed on the same scale as during training.
+
+        Args:
+            csv_path: Path to a CSV with a SMILES column.
+            label_cols: Target column names.  Pass ``[]`` for
+                unlabelled inference data.
+            model_checkpoint: HuggingFace model ID or local path.
+            smiles_col: Name of the SMILES column.
+            cache_dir: Directory for HDF5 feature cache.
+            batch_size: DataLoader batch size.
+            num_workers: DataLoader worker count.
+            scaler: Pre-fitted scaler from training.  If *None*, a new
+                scaler is fitted on this data (not recommended for
+                inference — auxiliary features may be on a different
+                scale).
+
+        Example::
+
+            dm_infer = CageFusionDataModule.for_inference(
+                "data/new_compounds.csv",
+                label_cols=[],
+                model_checkpoint="DeepChem/ChemBERTa-77M-MTR",
+                scaler=dm.scaler,
+                cache_dir="data/tmp/infer_cache",
+            )
+            for batch in dm_infer.test_loader:
+                ...
+        """
+        df = pd.read_csv(csv_path)
+        if smiles_col != "SMILES" and smiles_col in df.columns:
+            df.rename(columns={smiles_col: "SMILES"}, inplace=True)
+        logger.info("Loaded %d rows from '%s' (inference mode)", len(df), csv_path)
+
+        logger.info("Loading sequence encoder from '%s'…", model_checkpoint)
+        tokenizer, embedding_model = load_hf_checkpoint(model_checkpoint)
+        device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        embedding_model = embedding_model.to(device).eval()
+
+        os.makedirs(cache_dir, exist_ok=True)
+
+        logger.info("Featurising %d molecules…", len(df))
+        test_h5, fitted_scaler, _ = featurize_and_save_streaming(
+            df=df,
+            name="infer",
+            label_cols=label_cols,
+            cache_dir=cache_dir,
+            tokenizer=tokenizer,
+            model=embedding_model,
+            fit_scaler=(scaler is None),
+            scaler=scaler,
+        )
+        test_loader = _make_loader(test_h5, tokenizer, batch_size, num_workers, shuffle=False)
+        return cls(
+            train_loader=None,
+            val_loader=None,
+            label_names=list(label_cols),
+            test_loader=test_loader,
+            scaler=fitted_scaler,
+            tokenizer=tokenizer,
         )
 
     # ------------------------------------------------------------------

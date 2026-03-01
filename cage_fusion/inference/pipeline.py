@@ -297,6 +297,109 @@ class CageFusionPipeline:
     # Construction helpers
     # ------------------------------------------------------------------
 
+    # Maps the friendly model alias → filename on disk
+    _MODEL_FILES: Dict[str, str] = {
+        "best":     "best_model.pt",
+        "best_mcc": "best_model_mcc.pt",
+        "latest":   "latest_checkpoint.pt",
+    }
+
+    @classmethod
+    def push_to_hub(
+        cls,
+        checkpoint_dir: str,
+        repo_id: str,
+        *,
+        model: str = "best",
+        token: Optional[str] = None,
+        private: bool = False,
+        commit_message: str = "Upload CageFusion checkpoint",
+        ignore_patterns: Optional[List[str]] = None,
+    ) -> str:
+        """
+        Push a checkpoint directory to the HuggingFace Hub.
+
+        Always uploaded: the selected model weights, ``aux_features_scaler.pkl``,
+        and ``config.json`` (if present).  The other two checkpoint files and all
+        PNGs / CSVs are skipped by default.
+
+        Args:
+            checkpoint_dir: Local directory produced by :class:`Trainer`.
+            repo_id: HF Hub repo to create / update, e.g. ``"username/my-model"``.
+            model: Which checkpoint to upload — ``"best"`` (best ROC-AUC,
+                default), ``"best_mcc"`` (best MCC), or ``"latest"``.
+            token: HF write token (falls back to ``HUGGING_FACE_HUB_TOKEN`` env var).
+            private: Create a private repository.
+            commit_message: Commit message for the Hub upload.
+            ignore_patterns: Glob patterns to skip.  ``None`` uses the default
+                (the two *other* checkpoint files, ``*.png``, ``*.csv``).
+
+        Returns:
+            The URL of the uploaded repository.
+
+        Note:
+            Use the matching ``model_file_name`` when reloading::
+
+                # push best-MCC weights
+                CageFusionPipeline.push_to_hub(..., model="best_mcc")
+
+                # reload
+                pipe = CageFusionPipeline.from_pretrained(
+                    repo_id, model_file_name="best_model_mcc.pt"
+                )
+
+        Example::
+
+            CageFusionPipeline.push_to_hub(
+                "data/tmp/cage_fusion_custom",
+                repo_id="your-username/cage-fusion-demo",
+                model="best",        # or "best_mcc" / "latest"
+                token="hf_...",
+            )
+        """
+        if model not in cls._MODEL_FILES:
+            raise ValueError(
+                f"model={model!r} is not valid. "
+                f"Choose one of: {list(cls._MODEL_FILES)}"
+            )
+
+        try:
+            from huggingface_hub import HfApi
+        except ImportError as e:
+            raise ImportError(
+                "huggingface_hub is required for push_to_hub. "
+                "Install it with: pip install huggingface-hub"
+            ) from e
+
+        model_file = cls._MODEL_FILES[model]
+        model_path = os.path.join(checkpoint_dir, model_file)
+        if not os.path.exists(model_path):
+            raise FileNotFoundError(
+                f"Model file '{model_file}' not found in '{checkpoint_dir}'."
+            )
+        scaler_path = os.path.join(checkpoint_dir, "aux_features_scaler.pkl")
+        if not os.path.exists(scaler_path):
+            raise FileNotFoundError(
+                f"'aux_features_scaler.pkl' not found in '{checkpoint_dir}'."
+            )
+
+        # Ignore the two checkpoint files that were NOT selected
+        _other_ckpts = [v for k, v in cls._MODEL_FILES.items() if k != model]
+        _default_ignore = _other_ckpts + ["*.png", "*.csv"]
+        patterns = ignore_patterns if ignore_patterns is not None else _default_ignore
+
+        api = HfApi(token=token)
+        api.create_repo(repo_id=repo_id, private=private, exist_ok=True)
+
+        url = api.upload_folder(
+            folder_path=checkpoint_dir,
+            repo_id=repo_id,
+            commit_message=commit_message,
+            ignore_patterns=patterns,
+        )
+        logger.info("Pushed %s → %s", model_file, url)
+        return url
+
     @classmethod
     def from_pretrained(
         cls,

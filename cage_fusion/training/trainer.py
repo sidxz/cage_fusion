@@ -28,6 +28,7 @@ from cage_fusion.training.metrics import (
     AUCAccumulator,
     MCCAccumulator,
     PRAccumulator,
+    RegressionAccumulator,
 )
 from cage_fusion.training.training_args import TrainingArguments
 from cage_fusion.utils.device_utils import move_bmg_to_device
@@ -142,12 +143,13 @@ class Trainer:
         self.criterion = criterion
         self.device = device or torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
-        # Resolve label names: explicit argument > model config > empty list
+        # Resolve label names and task type from model config
+        cfg = getattr(model, "config", None)
         if label_names is not None:
             self.label_names = label_names
         else:
-            cfg = getattr(model, "config", None)
             self.label_names = getattr(cfg, "label_names", None) or []
+        self.task: str = getattr(cfg, "model_task", "classification")
 
         # Build a default Adam optimizer if none was provided
         if optimizer is not None:
@@ -178,13 +180,19 @@ class Trainer:
         best_mcc_path = os.path.join(args.checkpoints_dir, "best_model_mcc.pt")
 
         start_epoch = 1
-        best_val_auc = -1.0
-        best_val_mcc = -1.0
+        # For regression: lower RMSE / MAE is better (start at +inf).
+        # For classification: higher AUC / MCC is better (start at -1).
+        if self.task == "regression":
+            best_primary   = float("inf")   # RMSE
+            best_secondary = float("inf")   # MAE
+        else:
+            best_primary   = -1.0           # AUC
+            best_secondary = -1.0           # MCC
         history = self._empty_history()
 
         # Resume from checkpoint
         if os.path.exists(checkpoint_path):
-            start_epoch, best_val_auc, best_val_mcc, history = self._resume(checkpoint_path)
+            start_epoch, best_primary, best_secondary, history = self._resume(checkpoint_path)
 
         logger.info(
             "Training from epoch %d to %d | train batches: %d | val batches: %d",
@@ -205,20 +213,32 @@ class Trainer:
             self._update_history(history, train_metrics, val_metrics)
             self._log_epoch(epoch, history, val_metrics)
 
-            ckpt = self._make_checkpoint(epoch, history, best_val_auc, best_val_mcc, val_metrics)
+            ckpt = self._make_checkpoint(epoch, history, best_primary, best_secondary, val_metrics)
             torch.save(ckpt, checkpoint_path)
 
-            if val_metrics["auc"] > best_val_auc:
-                best_val_auc = val_metrics["auc"]
-                ckpt["best_val_auc"] = best_val_auc
-                torch.save(ckpt, best_auc_path)
-                logger.info("New best AUC=%.4f → %s", best_val_auc, best_auc_path)
+            if self.task == "regression":
+                p_val, s_val       = val_metrics["rmse"], val_metrics["mae"]
+                p_improved         = p_val < best_primary
+                s_improved         = s_val < best_secondary
+                p_label, s_label   = "RMSE", "MAE"
+            else:
+                p_val, s_val       = val_metrics["auc"], val_metrics["mcc"]
+                p_improved         = p_val > best_primary
+                s_improved         = s_val > best_secondary
+                p_label, s_label   = "AUC", "MCC"
 
-            if val_metrics["mcc"] > best_val_mcc:
-                best_val_mcc = val_metrics["mcc"]
-                ckpt["best_val_mcc"] = best_val_mcc
+            if p_improved:
+                best_primary = p_val
+                ckpt["best_primary"] = best_primary
+                torch.save(ckpt, best_auc_path)
+                self.model.save_pretrained(args.checkpoints_dir)
+                logger.info("New best %s=%.4f → %s", p_label, best_primary, best_auc_path)
+
+            if s_improved:
+                best_secondary = s_val
+                ckpt["best_secondary"] = best_secondary
                 torch.save(ckpt, best_mcc_path)
-                logger.info("New best MCC=%.4f → %s", best_val_mcc, best_mcc_path)
+                logger.info("New best %s=%.4f → %s", s_label, best_secondary, best_mcc_path)
 
         logger.info("Training complete.")
         self._plot_history(history)
@@ -232,9 +252,12 @@ class Trainer:
 
         num_tasks = getattr(getattr(model, "config", None), "num_labels", 1)
 
-        mcc_agg = MCCAccumulator(num_tasks, self.label_names)
-        auc_agg = AUCAccumulator(num_tasks, self.label_names)
-        pr_agg = PRAccumulator(num_tasks, self.label_names)
+        if self.task == "regression":
+            reg_agg = RegressionAccumulator(num_tasks, self.label_names)
+        else:
+            mcc_agg = MCCAccumulator(num_tasks, self.label_names)
+            auc_agg = AUCAccumulator(num_tasks, self.label_names)
+            pr_agg  = PRAccumulator(num_tasks, self.label_names)
 
         total_loss = 0.0
         fg_attention: dict = defaultdict(float)
@@ -278,10 +301,14 @@ class Trainer:
                 self.scheduler.step()
             total_loss += loss.item()
 
-            probs = torch.sigmoid(output.logits).detach()
-            mcc_agg.update(labels.detach(), probs)
-            auc_agg.update(labels.detach(), probs)
-            pr_agg.update(labels.detach(), probs)
+            preds = output.logits.detach()
+            if self.task == "regression":
+                reg_agg.update(labels.detach(), preds)
+            else:
+                probs = torch.sigmoid(preds)
+                mcc_agg.update(labels.detach(), probs)
+                auc_agg.update(labels.detach(), probs)
+                pr_agg.update(labels.detach(), probs)
 
             # Accumulate FG prompt attention stats
             if output.prompt_attn_weights:
@@ -293,11 +320,8 @@ class Trainer:
                                 fg_count[fg_id] += 1
 
         avg_loss = total_loss / max(1, len(self.train_loader))
-        avg_mcc, *_ = mcc_agg.compute()
-        avg_auc = auc_agg.compute()
-        avg_pr = pr_agg.compute()
 
-        # Log top-5 attended functional groups (single message to avoid Jupyter output fragmentation)
+        # Log top-5 attended functional groups
         if fg_attention:
             avg_fg = {k: fg_attention[k] / fg_count[k] for k in fg_attention if fg_count[k] > 0}
             top5 = sorted(avg_fg.items(), key=lambda x: x[1], reverse=True)[:5]
@@ -311,11 +335,22 @@ class Trainer:
             except Exception:
                 pass
 
-        logger.info(
-            "Epoch train | loss=%.4f mcc=%.4f auc=%.4f pr=%.4f",
-            avg_loss, avg_mcc, avg_auc, avg_pr,
-        )
-        return {"loss": avg_loss, "mcc": avg_mcc, "auc": avg_auc, "pr": avg_pr}
+        if self.task == "regression":
+            avg_rmse, avg_mae, avg_r2 = reg_agg.compute()
+            logger.info(
+                "Epoch train | loss=%.4f rmse=%.4f mae=%.4f r2=%.4f",
+                avg_loss, avg_rmse, avg_mae, avg_r2,
+            )
+            return {"loss": avg_loss, "rmse": avg_rmse, "mae": avg_mae, "r2": avg_r2}
+        else:
+            avg_mcc, *_ = mcc_agg.compute()
+            avg_auc = auc_agg.compute()
+            avg_pr  = pr_agg.compute()
+            logger.info(
+                "Epoch train | loss=%.4f mcc=%.4f auc=%.4f pr=%.4f",
+                avg_loss, avg_mcc, avg_auc, avg_pr,
+            )
+            return {"loss": avg_loss, "mcc": avg_mcc, "auc": avg_auc, "pr": avg_pr}
 
     @torch.no_grad()
     def evaluate(self) -> dict:
@@ -324,9 +359,12 @@ class Trainer:
         model.eval()
         num_tasks = getattr(getattr(model, "config", None), "num_labels", 1)
 
-        mcc_agg = MCCAccumulator(num_tasks, self.label_names)
-        auc_agg = AUCAccumulator(num_tasks, self.label_names)
-        pr_agg = PRAccumulator(num_tasks, self.label_names)
+        if self.task == "regression":
+            reg_agg = RegressionAccumulator(num_tasks, self.label_names)
+        else:
+            mcc_agg = MCCAccumulator(num_tasks, self.label_names)
+            auc_agg = AUCAccumulator(num_tasks, self.label_names)
+            pr_agg  = PRAccumulator(num_tasks, self.label_names)
 
         total_loss = 0.0
         total_graph_norm = total_attn_norm = total_aux_norm = 0.0
@@ -362,31 +400,51 @@ class Trainer:
                 total_attn_norm += output.attn_output.norm(dim=1).mean().item()
             total_aux_norm += aux_feats.norm(dim=1).mean().item()
 
-            probs = torch.sigmoid(output.logits)
-            mcc_agg.update(labels, probs)
-            auc_agg.update(labels, probs)
-            pr_agg.update(labels, probs)
+            preds = output.logits
+            if self.task == "regression":
+                reg_agg.update(labels, preds)
+            else:
+                probs = torch.sigmoid(preds)
+                mcc_agg.update(labels, probs)
+                auc_agg.update(labels, probs)
+                pr_agg.update(labels, probs)
 
         n = max(1, len(self.val_loader))
         avg_loss = total_loss / n
-        per_task_auc = auc_agg.compute(reduce="none")
-        per_task_pr = pr_agg.compute(reduce="none")
-        avg_auc = float(np.nanmean(per_task_auc)) if len(per_task_auc) > 0 else 0.0
-        avg_pr = float(np.mean(per_task_pr)) if len(per_task_pr) > 0 else 0.0
-        avg_mcc, best_thresholds, per_task_mcc = mcc_agg.compute()
-
-        logger.info(
-            "Epoch val | loss=%.4f mcc=%.4f auc=%.4f pr=%.4f",
-            avg_loss, avg_mcc, avg_auc, avg_pr,
-        )
-        return {
-            "loss": avg_loss, "mcc": avg_mcc, "auc": avg_auc, "pr": avg_pr,
-            "best_thresholds": best_thresholds,
-            "per_task": list(zip(per_task_mcc, per_task_auc, per_task_pr)),
+        norms = {
             "norm_graph": total_graph_norm / n,
-            "norm_attn": total_attn_norm / n,
-            "norm_aux": total_aux_norm / n,
+            "norm_attn":  total_attn_norm / n,
+            "norm_aux":   total_aux_norm / n,
         }
+
+        if self.task == "regression":
+            avg_rmse, avg_mae, avg_r2          = reg_agg.compute()
+            pt_rmse, pt_mae, pt_r2             = reg_agg.compute(reduce="none")
+            logger.info(
+                "Epoch val | loss=%.4f rmse=%.4f mae=%.4f r2=%.4f",
+                avg_loss, avg_rmse, avg_mae, avg_r2,
+            )
+            return {
+                "loss": avg_loss, "rmse": avg_rmse, "mae": avg_mae, "r2": avg_r2,
+                "per_task": list(zip(pt_rmse.tolist(), pt_mae.tolist(), pt_r2.tolist())),
+                **norms,
+            }
+        else:
+            per_task_auc                       = auc_agg.compute(reduce="none")
+            per_task_pr                        = pr_agg.compute(reduce="none")
+            avg_auc = float(np.nanmean(per_task_auc)) if len(per_task_auc) > 0 else 0.0
+            avg_pr  = float(np.nanmean(per_task_pr))  if len(per_task_pr) > 0 else 0.0
+            avg_mcc, best_thresholds, per_task_mcc = mcc_agg.compute()
+            logger.info(
+                "Epoch val | loss=%.4f mcc=%.4f auc=%.4f pr=%.4f",
+                avg_loss, avg_mcc, avg_auc, avg_pr,
+            )
+            return {
+                "loss": avg_loss, "mcc": avg_mcc, "auc": avg_auc, "pr": avg_pr,
+                "best_thresholds": best_thresholds,
+                "per_task": list(zip(per_task_mcc, per_task_auc, per_task_pr)),
+                **norms,
+            }
 
     # ── Phased training ──────────────────────────────────────────────────────
 
@@ -464,15 +522,17 @@ class Trainer:
 
     # ── Internals ────────────────────────────────────────────────────────────
 
-    @staticmethod
-    def _empty_history() -> dict:
-        keys = [
-            "train_loss", "val_loss", "train_mcc", "val_mcc",
-            "train_auc", "val_auc", "train_pr", "val_pr",
-            "per_task", "scale_graph", "scale_attn", "scale_aux",
+    def _empty_history(self) -> dict:
+        common = [
+            "train_loss", "val_loss", "per_task",
+            "scale_graph", "scale_attn", "scale_aux",
             "val_norm_graph", "val_norm_attn", "val_norm_aux",
         ]
-        return {k: [] for k in keys}
+        if self.task == "regression":
+            task_keys = ["train_rmse", "val_rmse", "train_mae", "val_mae", "train_r2", "val_r2"]
+        else:
+            task_keys = ["train_mcc", "val_mcc", "train_auc", "val_auc", "train_pr", "val_pr"]
+        return {k: [] for k in common + task_keys}
 
     def _resume(self, checkpoint_path: str):
         logger.info("Resuming from %s", checkpoint_path)
@@ -498,12 +558,18 @@ class Trainer:
                         state[k] = v.to(self.device)
         history = ckpt.get("history", self._empty_history())
         start_epoch = ckpt.get("epoch", 0) + 1
-        best_auc = ckpt.get("best_val_auc", -1.0)
-        best_mcc = ckpt.get("best_val_mcc", -1.0)
-        return start_epoch, best_auc, best_mcc, history
+        if self.task == "regression":
+            best_primary   = ckpt.get("best_primary",   float("inf"))
+            best_secondary = ckpt.get("best_secondary", float("inf"))
+        else:
+            best_primary   = ckpt.get("best_primary",   ckpt.get("best_val_auc", -1.0))
+            best_secondary = ckpt.get("best_secondary", ckpt.get("best_val_mcc", -1.0))
+        return start_epoch, best_primary, best_secondary, history
 
     def _update_history(self, history: dict, train: dict, val: dict):
-        for metric in ("loss", "mcc", "auc", "pr"):
+        metrics = ("loss", "rmse", "mae", "r2") if self.task == "regression" \
+                  else ("loss", "mcc", "auc", "pr")
+        for metric in metrics:
             history[f"train_{metric}"].append(train[metric])
             history[f"val_{metric}"].append(val[metric])
         history["per_task"].append(val.get("per_task", []))
@@ -524,19 +590,21 @@ class Trainer:
         per_task = val.get("per_task", [])
         log_epoch_results(epoch, num_epochs, history, self.label_names, per_task)
 
-    def _make_checkpoint(self, epoch, history, best_auc, best_mcc, val):
+    def _make_checkpoint(self, epoch, history, best_primary, best_secondary, val):
         sched_state = self.scheduler.state_dict() if self.scheduler else {}
-        return {
+        ckpt = {
             "epoch": epoch,
             "model_state_dict": self.model.state_dict(),
             "optimizer_state_dict": self.optimizer.state_dict(),
             "scheduler_state_dict": sched_state,
             "history": history,
-            "best_val_auc": best_auc,
-            "best_val_mcc": best_mcc,
+            "best_primary":   best_primary,
+            "best_secondary": best_secondary,
             "config": self.model.config.to_dict() if hasattr(self.model, "config") else {},
-            "best_thresholds": val.get("best_thresholds", []),
         }
+        if self.task != "regression":
+            ckpt["best_thresholds"] = val.get("best_thresholds", [])
+        return ckpt
 
     def _plot_history(self, history: dict):
         try:

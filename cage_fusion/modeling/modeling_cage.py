@@ -722,6 +722,8 @@ class CAGEFusionForRegression(CAGEFusionPreTrainedModel):
         input_ids_batch: Optional[torch.Tensor] = None,
         smiles_batch: Optional[List[str]] = None,
         labels: Optional[torch.Tensor] = None,
+        lambda_entropy: float = 0.0,
+        lambda_prior: float = 0.0,
         return_attn: bool = False,
     ) -> CageFusionModelOutput:
         enc         = self.encoder(
@@ -731,7 +733,13 @@ class CAGEFusionForRegression(CAGEFusionPreTrainedModel):
             return_attn=return_attn,
         )
         predictions = self.regressor(enc.hidden_states)
-        loss        = nn.MSELoss()(predictions, labels) if labels is not None else None
+        loss        = None
+        if labels is not None:
+            loss = (
+                nn.MSELoss()(predictions, labels)
+                + lambda_entropy * enc.attn_entropy_loss
+                + lambda_prior   * enc.token_prior_loss
+            )
         return CageFusionModelOutput(
             logits=predictions, loss=loss,
             hidden_states=enc.hidden_states,

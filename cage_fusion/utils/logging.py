@@ -17,8 +17,18 @@ import os
 import sys
 from typing import List, Optional
 
+
+def _in_jupyter() -> bool:
+    try:
+        from IPython import get_ipython
+        return get_ipython() is not None
+    except ImportError:
+        return False
+
+
 import matplotlib
-matplotlib.use("Agg")
+if not _in_jupyter():
+    matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
@@ -27,14 +37,6 @@ from rich.console import Console
 from rich.logging import RichHandler
 from rich.table import Table
 from sklearn.metrics import confusion_matrix
-
-
-def _in_jupyter() -> bool:
-    try:
-        from IPython import get_ipython
-        return get_ipython() is not None
-    except ImportError:
-        return False
 
 try:
     from loguru import logger as _loguru_logger
@@ -111,13 +113,18 @@ def log_epoch_results(
     """
     Print rich-formatted training / validation statistics for one epoch.
 
+    Task type is detected automatically from history keys:
+    regression histories contain ``"val_rmse"``; classification contain ``"val_auc"``.
+
     Args:
         epoch: Current epoch number (1-based).
         num_epochs: Total number of epochs.
         history: Dict of lists keyed by metric name (e.g. ``"train_loss"``).
         label_names: Task / label names used as row labels.
-        per_task_metrics: List of ``(mcc, auc, pr)`` tuples, one per task.
+        per_task_metrics: ``(mcc, auc, pr)`` tuples for classification,
+            or ``(rmse, mae, r2)`` tuples for regression, one per task.
     """
+    is_regression = "val_rmse" in history
 
     def _delta(current, history_list, is_loss=False):
         if len(history_list) < 2:
@@ -142,12 +149,21 @@ def log_epoch_results(
     val_table.add_column("Value", justify="right")
     val_table.add_column("Δ", justify="right")
 
-    for key, name, is_loss in [
-        ("val_loss", "Loss", True),
-        ("val_mcc", "MCC", False),
-        ("val_auc", "AUC", False),
-        ("val_pr", "PR-AUC", False),
-    ]:
+    if is_regression:
+        summary_metrics = [
+            ("val_loss", "Loss",  True),
+            ("val_rmse", "RMSE",  True),
+            ("val_mae",  "MAE",   True),
+            ("val_r2",   "R²",    False),
+        ]
+    else:
+        summary_metrics = [
+            ("val_loss", "Loss",   True),
+            ("val_mcc",  "MCC",    False),
+            ("val_auc",  "AUC",    False),
+            ("val_pr",   "PR-AUC", False),
+        ]
+    for key, name, is_loss in summary_metrics:
         val = history[key][-1]
         val_table.add_row(name, f"{val:.4f}", _delta(val, history[key], is_loss))
     console.print(val_table)
@@ -159,28 +175,55 @@ def log_epoch_results(
         show_footer=False,
     )
     task_table.add_column("Task", style="cyan")
-    task_table.add_column("ROC-AUC", style="magenta", justify="right")
-    task_table.add_column("MCC", style="yellow", justify="right")
-    task_table.add_column("PR-AUC", style="green", justify="right")
 
-    prev_tasks = history["per_task"][-2] if len(history["per_task"]) > 1 else None
-    for i, (mcc, auc, pr) in enumerate(per_task_metrics):
-        task = label_names[i] if label_names and i < len(label_names) else f"Task {i}"
-        auc_d = _delta(auc, [p[i][1] for p in history["per_task"]]) if prev_tasks else ""
-        mcc_d = _delta(mcc, [p[i][0] for p in history["per_task"]]) if prev_tasks else ""
-        pr_d  = _delta(pr,  [p[i][2] for p in history["per_task"]]) if prev_tasks else ""
-        task_table.add_row(task, f"{auc:.3f} {auc_d}", f"{mcc:.3f} {mcc_d}", f"{pr:.3f} {pr_d}")
+    if is_regression:
+        task_table.add_column("RMSE", style="magenta", justify="right")
+        task_table.add_column("MAE",  style="yellow",  justify="right")
+        task_table.add_column("R²",   style="green",   justify="right")
 
-    macro_auc = history["val_auc"][-1]
-    macro_mcc = history["val_mcc"][-1]
-    macro_pr  = history["val_pr"][-1]
-    task_table.add_section()
-    task_table.add_row(
-        "[bold]Macro-Avg[/bold]",
-        f"[bold]{macro_auc:.4f}[/bold]",
-        f"[bold]{macro_mcc:.4f}[/bold]",
-        f"[bold]{macro_pr:.4f}[/bold]",
-    )
+        prev_tasks = history["per_task"][-2] if len(history["per_task"]) > 1 else None
+        for i, (rmse, mae, r2) in enumerate(per_task_metrics):
+            task = label_names[i] if label_names and i < len(label_names) else f"Task {i}"
+            rmse_d = _delta(rmse, [p[i][0] for p in history["per_task"]], is_loss=True) if prev_tasks else ""
+            mae_d  = _delta(mae,  [p[i][1] for p in history["per_task"]], is_loss=True) if prev_tasks else ""
+            r2_d   = _delta(r2,   [p[i][2] for p in history["per_task"]]) if prev_tasks else ""
+            task_table.add_row(
+                task,
+                f"{rmse:.3f} {rmse_d}",
+                f"{mae:.3f} {mae_d}",
+                f"{r2:.3f} {r2_d}",
+            )
+        task_table.add_section()
+        task_table.add_row(
+            "[bold]Macro-Avg[/bold]",
+            f"[bold]{history['val_rmse'][-1]:.4f}[/bold]",
+            f"[bold]{history['val_mae'][-1]:.4f}[/bold]",
+            f"[bold]{history['val_r2'][-1]:.4f}[/bold]",
+        )
+    else:
+        task_table.add_column("ROC-AUC", style="magenta", justify="right")
+        task_table.add_column("MCC",     style="yellow",  justify="right")
+        task_table.add_column("PR-AUC",  style="green",   justify="right")
+
+        prev_tasks = history["per_task"][-2] if len(history["per_task"]) > 1 else None
+        for i, (mcc, auc, pr) in enumerate(per_task_metrics):
+            task = label_names[i] if label_names and i < len(label_names) else f"Task {i}"
+            auc_d = _delta(auc, [p[i][1] for p in history["per_task"]]) if prev_tasks else ""
+            mcc_d = _delta(mcc, [p[i][0] for p in history["per_task"]]) if prev_tasks else ""
+            pr_d  = _delta(pr,  [p[i][2] for p in history["per_task"]]) if prev_tasks else ""
+            task_table.add_row(
+                task,
+                f"{auc:.3f} {auc_d}",
+                f"{mcc:.3f} {mcc_d}",
+                f"{pr:.3f} {pr_d}",
+            )
+        task_table.add_section()
+        task_table.add_row(
+            "[bold]Macro-Avg[/bold]",
+            f"[bold]{history['val_auc'][-1]:.4f}[/bold]",
+            f"[bold]{history['val_mcc'][-1]:.4f}[/bold]",
+            f"[bold]{history['val_pr'][-1]:.4f}[/bold]",
+        )
     console.print(task_table)
 
     # Learned scaler table
@@ -214,8 +257,9 @@ def log_epoch_results(
 
 def plot_training_history(history: dict, output_dir: Optional[str] = None):
     """
-    Plot train/val curves for loss, MCC, AUC, and PR-AUC, and optionally save
-    them as PNGs and a CSV.
+    Plot train/val curves and optionally save as PNGs and a CSV.
+
+    Task type is detected automatically from history keys.
 
     Args:
         history: Training history dict produced by :class:`~cage_fusion.training.Trainer`.
@@ -224,12 +268,21 @@ def plot_training_history(history: dict, output_dir: Optional[str] = None):
     if output_dir:
         os.makedirs(output_dir, exist_ok=True)
 
-    metrics = [
-        ("loss", "train_loss", "val_loss"),
-        ("mcc",  "train_mcc",  "val_mcc"),
-        ("auc",  "train_auc",  "val_auc"),
-        ("pr",   "train_pr",   "val_pr"),
-    ]
+    is_regression = "val_rmse" in history
+    if is_regression:
+        metrics = [
+            ("loss", "train_loss", "val_loss"),
+            ("rmse", "train_rmse", "val_rmse"),
+            ("mae",  "train_mae",  "val_mae"),
+            ("r2",   "train_r2",   "val_r2"),
+        ]
+    else:
+        metrics = [
+            ("loss", "train_loss", "val_loss"),
+            ("mcc",  "train_mcc",  "val_mcc"),
+            ("auc",  "train_auc",  "val_auc"),
+            ("pr",   "train_pr",   "val_pr"),
+        ]
 
     for title, train_key, val_key in metrics:
         plt.figure()
