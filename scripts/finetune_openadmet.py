@@ -53,20 +53,18 @@ import sys
 import torch
 from sklearn.model_selection import train_test_split
 
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
-
 from cage_fusion import AutoCageFusion, CageFusionConfig
 from cage_fusion.data import CageFusionDataModule
 from cage_fusion.training import Trainer, TrainingArguments
-from benchmarks.openadmet.data_loader import load_openadmet, OPENADMET_LABEL_COLS
-from benchmarks.openadmet.preprocessing import forward_transform
+from cage_fusion.benchmarks.openadmet.data_loader import load_openadmet, OPENADMET_LABEL_COLS
+from cage_fusion.benchmarks.openadmet.preprocessing import forward_transform
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("finetune_openadmet")
 
 # ── Directories ───────────────────────────────────────────────────────────────
 
-PRETRAIN_CKPT  = "/data-1/cage-fusion-pretrain/checkpoints"
+PRETRAIN_CKPT  = "/data-1/cage-fusion-pretrain/regression/checkpoints"
 ROOT           = "/data-1/cage-fusion-admet"
 CHECKPOINT_DIR = os.path.join(ROOT, "checkpoints")
 FEATURE_DIR    = os.path.join(ROOT, "features")
@@ -118,6 +116,8 @@ def parse_args():
                    help="Fraction of training data to hold out for validation.")
     p.add_argument("--seed",          type=int,   default=42)
     p.add_argument("--num-workers",   type=int,   default=4)
+    p.add_argument("--bf16",          action="store_true",
+                   help="Enable BF16 autocast (recommended on A6000 Ada / Ampere+).")
     p.add_argument("--from-scratch",  action="store_true",
                    help="Skip backbone loading; train from random initialisation.")
     p.add_argument("--pretrain-ckpt", type=str,   default=PRETRAIN_CKPT,
@@ -221,6 +221,7 @@ def main():
             seed=args.seed,
             primary_metric="rmse",
             primary_metric_direction="min",
+            bf16=args.bf16,
         )
         Trainer(
             model=model,
@@ -249,6 +250,7 @@ def main():
         seed=args.seed,
         primary_metric="marae",           # leaderboard metric
         primary_metric_direction="min",
+        bf16=args.bf16,
     )
     args_B.save(CHECKPOINT_DIR)
 

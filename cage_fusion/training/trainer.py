@@ -288,18 +288,23 @@ class Trainer:
 
             self.optimizer.zero_grad(set_to_none=True)
 
-            output = model(
-                bmg=bmg,
-                sequence_embeddings=token_embs,
-                attn_mask=attn_mask,
-                aux_feats=aux_feats,
-                input_ids_batch=input_ids,
-                smiles_batch=smiles_batch,
-                labels=labels,
-                lambda_entropy=args.lambda_entropy,
-                lambda_prior=args.lambda_prior,
-                return_attn=True,
-            )
+            with torch.autocast(
+                device_type=self.device.type,
+                dtype=torch.bfloat16,
+                enabled=args.bf16 and self.device.type == "cuda",
+            ):
+                output = model(
+                    bmg=bmg,
+                    sequence_embeddings=token_embs,
+                    attn_mask=attn_mask,
+                    aux_feats=aux_feats,
+                    input_ids_batch=input_ids,
+                    smiles_batch=smiles_batch,
+                    labels=labels,
+                    lambda_entropy=args.lambda_entropy,
+                    lambda_prior=args.lambda_prior,
+                    return_attn=True,
+                )
 
             loss = output.loss
             if loss is None:
@@ -591,8 +596,8 @@ class Trainer:
         metrics = ("loss", "rmse", "mae", "r2", "marae") if self.task == "regression" \
                   else ("loss", "mcc", "auc", "pr")
         for metric in metrics:
-            history[f"train_{metric}"].append(train[metric])
-            history[f"val_{metric}"].append(val[metric])
+            history[f"train_{metric}"].append(train.get(metric, float("nan")))
+            history[f"val_{metric}"].append(val.get(metric, float("nan")))
         history["per_task"].append(val.get("per_task", []))
         m = self.model
         # Scalers live on CAGEFusionModel; task-head models (Classification/Regression)

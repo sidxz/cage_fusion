@@ -63,6 +63,10 @@ class TrainingArguments:
     ``"max"`` if higher is better (r2, auc, mcc, pr).
     """
 
+    # ── Mixed precision ───────────────────────────────────────────────────
+    bf16: bool = False
+    """Use BF16 autocast during training (recommended for A6000 Ada / Ampere+)."""
+
     # ── Misc ─────────────────────────────────────────────────────────────
     seed: int = 42
 

@@ -59,7 +59,8 @@ from torch.utils.data import DataLoader
 from cage_fusion.data.dataset import CageFusionStreamingDataset
 from cage_fusion.data.collator import collate_cage_fusion
 from cage_fusion.featurization import featurize_and_save_streaming
-from cage_fusion.utils.hf_loader import load_hf_checkpoint
+from cage_fusion.featurization.featurizer_utils import normalize_auxiliary_features
+from cage_fusion.utils.hf_loader import load_hf_checkpoint, load_tokenizer
 
 logger = logging.getLogger(__name__)
 
@@ -129,6 +130,7 @@ class CageFusionDataModule:
         batch_size: int = 128,
         num_workers: int = 0,
         scaler=None,
+        skip_featurize: bool = False,
     ) -> "CageFusionDataModule":
         """
         Build a data module from train / val (and optionally test) DataFrames.
@@ -171,58 +173,98 @@ class CageFusionDataModule:
             if smiles_col != "SMILES" and smiles_col in df.columns:
                 df.rename(columns={smiles_col: "SMILES"}, inplace=True)
 
-        # Load tokenizer + embedding model if not provided
-        if tokenizer is None or embedding_model is None:
-            logger.info("Loading sequence encoder from '%s'…", model_checkpoint)
-            tok, emb = load_hf_checkpoint(model_checkpoint)
-            tokenizer = tokenizer or tok
-            embedding_model = embedding_model or emb
-
-        device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-        embedding_model = embedding_model.to(device).eval()
-
         os.makedirs(cache_dir, exist_ok=True)
+        _scaler_path = os.path.join(cache_dir, "aux_features_scaler.pkl")
 
-        # Featurise training split (fit scaler)
-        logger.info("Featurising training split (%d molecules)…", len(train_df))
-        train_h5, fitted_scaler, _ = featurize_and_save_streaming(
-            df=train_df,
-            name="train",
-            label_cols=label_cols,
-            cache_dir=cache_dir,
-            tokenizer=tokenizer,
-            model=embedding_model,
-            fit_scaler=(scaler is None),
-            scaler=scaler,
-        )
-        scaler = fitted_scaler
+        def _ensure_norm_aux(h5_path: str, fitted_scaler) -> None:
+            """Write 'auxiliary_features_normalized' if not already present."""
+            import h5py as _h5py
+            if fitted_scaler is None:
+                return
+            with _h5py.File(h5_path, "r") as _f:
+                if "auxiliary_features_normalized" in _f:
+                    return
+            aux_dim = len(fitted_scaler.mean_)
+            normalize_auxiliary_features(h5_path, fitted_scaler, aux_dim)
 
-        # Featurise val split (apply fitted scaler)
-        logger.info("Featurising validation split (%d molecules)…", len(val_df))
-        val_h5, _, _ = featurize_and_save_streaming(
-            df=val_df,
-            name="val",
-            label_cols=label_cols,
-            cache_dir=cache_dir,
-            tokenizer=tokenizer,
-            model=embedding_model,
-            fit_scaler=False,
-            scaler=scaler,
-        )
-
-        train_loader = _make_loader(
-            train_h5, tokenizer, batch_size, num_workers, shuffle=True
-        )
-        val_loader = _make_loader(
-            val_h5, tokenizer, batch_size, num_workers, shuffle=False
-        )
-
-        test_loader = None
+        # Determine which splits need featurisation
+        splits = [("train", train_df), ("val", val_df)]
         if test_df is not None:
-            logger.info("Featurising test split (%d molecules)…", len(test_df))
-            test_h5, _, _ = featurize_and_save_streaming(
-                df=test_df,
-                name="test",
+            splits.append(("test", test_df))
+
+        _cached = {
+            name: os.path.join(cache_dir, f"{name}_cage_fusion.h5")
+            for name, _ in splits
+        }
+        _all_cached = all(os.path.isfile(p) for p in _cached.values())
+
+        if skip_featurize and _all_cached:
+            # Fast path: HDF5 caches already exist — skip ChemBERTa embedding pass
+            logger.info(
+                "skip_featurize=True and all HDF5 caches found in '%s' — "
+                "skipping featurisation.",
+                cache_dir,
+            )
+            if tokenizer is None:
+                tokenizer = load_tokenizer(model_checkpoint)
+            if scaler is None:
+                if os.path.isfile(_scaler_path):
+                    scaler = joblib.load(_scaler_path)
+                    logger.info("Loaded scaler from '%s'.", _scaler_path)
+                else:
+                    logger.warning(
+                        "No scaler found at '%s'; auxiliary features will be unscaled.",
+                        _scaler_path,
+                    )
+            # Normalise aux features if the normalised dataset isn't already present
+            for _name in _cached:
+                _ensure_norm_aux(_cached[_name], scaler)
+        else:
+            if skip_featurize and not _all_cached:
+                missing = [n for n, p in _cached.items() if not os.path.isfile(p)]
+                logger.warning(
+                    "skip_featurize=True but missing caches for splits %s — "
+                    "running featurisation.",
+                    missing,
+                )
+
+            # Load tokenizer + embedding model if not provided
+            if tokenizer is None or embedding_model is None:
+                logger.info("Loading sequence encoder from '%s'…", model_checkpoint)
+                tok, emb = load_hf_checkpoint(model_checkpoint)
+                tokenizer = tokenizer or tok
+                embedding_model = embedding_model or emb
+
+            device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+            embedding_model = embedding_model.to(device).eval()
+
+            # Featurise training split (fit scaler)
+            logger.info("Featurising training split (%d molecules)…", len(train_df))
+            train_h5, fitted_scaler, _ = featurize_and_save_streaming(
+                df=train_df,
+                name="train",
+                label_cols=label_cols,
+                cache_dir=cache_dir,
+                tokenizer=tokenizer,
+                model=embedding_model,
+                fit_scaler=(scaler is None),
+                scaler=scaler,
+            )
+            scaler = fitted_scaler
+
+            # Auto-save fitted scaler alongside the HDF5 caches for future reuse
+            joblib.dump(scaler, _scaler_path)
+            logger.info("Scaler cached to '%s'.", _scaler_path)
+
+            # Write normalised aux features (raw descriptors are always stored first;
+            # normalised is a second dataset keyed "auxiliary_features_normalized")
+            _ensure_norm_aux(_cached["train"], scaler)
+
+            # Featurise val split (apply fitted scaler)
+            logger.info("Featurising validation split (%d molecules)…", len(val_df))
+            featurize_and_save_streaming(
+                df=val_df,
+                name="val",
                 label_cols=label_cols,
                 cache_dir=cache_dir,
                 tokenizer=tokenizer,
@@ -230,8 +272,33 @@ class CageFusionDataModule:
                 fit_scaler=False,
                 scaler=scaler,
             )
+            _ensure_norm_aux(_cached["val"], scaler)
+
+            if test_df is not None:
+                logger.info("Featurising test split (%d molecules)…", len(test_df))
+                featurize_and_save_streaming(
+                    df=test_df,
+                    name="test",
+                    label_cols=label_cols,
+                    cache_dir=cache_dir,
+                    tokenizer=tokenizer,
+                    model=embedding_model,
+                    fit_scaler=False,
+                    scaler=scaler,
+                )
+                _ensure_norm_aux(_cached["test"], scaler)
+
+        train_loader = _make_loader(
+            _cached["train"], tokenizer, batch_size, num_workers, shuffle=True
+        )
+        val_loader = _make_loader(
+            _cached["val"], tokenizer, batch_size, num_workers, shuffle=False
+        )
+
+        test_loader = None
+        if test_df is not None:
             test_loader = _make_loader(
-                test_h5, tokenizer, batch_size, num_workers, shuffle=False
+                _cached["test"], tokenizer, batch_size, num_workers, shuffle=False
             )
 
         return cls(

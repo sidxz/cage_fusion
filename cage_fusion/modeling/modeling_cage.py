@@ -580,16 +580,15 @@ class CAGEFusionModel(CAGEFusionPreTrainedModel):
     ):
         embedding_proj = self.embedding_proj(sequence_embeddings)
 
-        special_mask = torch.zeros_like(input_ids_batch, dtype=torch.bool)
-        for tok in [self.PAD_TOKEN_ID, self.CLS_TOKEN_ID, self.SEP_TOKEN_ID]:
-            special_mask |= (input_ids_batch == tok)
-        key_padding_mask = (attn_mask == 0) | special_mask
+        # Only mask PAD tokens as cross-attention keys.
+        # CLS carries global sequence context and SEP marks sentence boundaries —
+        # both are valid keys for graph nodes to attend to.
+        # Masking them was unnecessary and risked all-masked softmax → NaN.
+        key_padding_mask = (attn_mask == 0)  # True = ignore (PAD only)
 
-        mask_pad_cls = (
-            (input_ids_batch == self.PAD_TOKEN_ID)
-            | (input_ids_batch == self.CLS_TOKEN_ID)
-        ).unsqueeze(-1)
-        embedding_proj = embedding_proj.masked_fill(mask_pad_cls, 0.0)
+        # Zero out PAD positions in the value stream so they contribute nothing.
+        mask_pad = (input_ids_batch == self.PAD_TOKEN_ID).unsqueeze(-1)
+        embedding_proj = embedding_proj.masked_fill(mask_pad, 0.0)
 
         padded, atom_lengths = self._pad_atoms(atom_features, bmg)
         graph_queries = self.graph_proj(padded)
@@ -733,8 +732,18 @@ class CAGEFusionForMultiLabelClassification(CAGEFusionPreTrainedModel):
         logits = self.classifier(enc.hidden_states)
         loss   = None
         if labels is not None:
+            mask = ~torch.isnan(labels)          # [B, L] — False where label is missing
+            if mask.any():
+                safe_labels = labels.clone()
+                safe_labels[~mask] = 0.0         # NaN → 0 for safe BCE computation
+                bce_elem = nn.functional.binary_cross_entropy_with_logits(
+                    logits, safe_labels, reduction="none"
+                )                                # [B, L]
+                bce_loss = (bce_elem * mask.float()).sum() / mask.float().sum().clamp(min=1.0)
+            else:
+                bce_loss = torch.zeros(1, device=logits.device).squeeze()
             loss = (
-                nn.BCEWithLogitsLoss(pos_weight=pos_weight)(logits, labels)
+                bce_loss
                 + lambda_entropy * enc.attn_entropy_loss
                 + lambda_prior   * enc.token_prior_loss
             )

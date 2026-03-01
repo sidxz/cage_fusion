@@ -159,8 +159,10 @@ def process_aux_feats(batch_df, desc_calc, scaler, fit_scaler: bool = True, clea
 def process_labels(batch_df, label_cols: List[str]) -> np.ndarray:
     if not label_cols:
         return np.empty((len(batch_df), 0), dtype=np.float32)
-    arr = batch_df[label_cols].to_numpy(copy=False)
-    arr = np.nan_to_num(arr, nan=0.0, posinf=0.0, neginf=0.0)
+    arr = batch_df[label_cols].to_numpy(copy=False).astype(np.float64, copy=True)
+    # Replace ±inf with NaN; preserve NaN so the masked MSE loss can ignore
+    # missing measurements.  Do NOT convert NaN → 0: the loss mask relies on NaN.
+    arr[np.isinf(arr)] = np.nan
     return arr.astype(np.float32, copy=False)
 
 

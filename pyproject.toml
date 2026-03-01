@@ -36,6 +36,9 @@ dependencies = [
     "fastapi",
     "uvicorn",
     "hf-transfer",
+    "PyTDC",
+    "datasets",
+    "setuptools<71",  # pkg_resources (required by PyTDC) was dropped in setuptools 71+
 ]
 
 [dependency-groups]
@@ -51,6 +54,13 @@ cage_fusion = ["py.typed"]
 name = "pytorch-cu124"
 url = "https://download.pytorch.org/whl/cu124"
 explicit = true
+
+[tool.uv]
+override-dependencies = [
+    # rdkit-pypi (pulled in by PyTDC) has no cp312 wheels.
+    # We already have rdkit>=2024.09 which provides the same module.
+    "rdkit-pypi; python_version < '3.12'",
+]
 
 [tool.uv.sources]
 torch = { index = "pytorch-cu124" }

@@ -39,24 +39,67 @@ OPENADMET_LABEL_COLS = [
 # transform_hint is informational only — preprocessing.py handles actual transforms.
 
 TDC_ADMET_TASKS = [
-    # Lipophilicity / logD
-    ("ADMET", "Lipophilicity_AstraZeneca",    "LogD_AZ",          "none"),
-    # Solubility
-    ("ADMET", "Solubility_AqSolDB",           "logS_AqSol",       "none"),
-    # Permeability
-    ("ADMET", "Caco2_Wang",                   "logPapp_Caco2",    "none"),
-    ("ADMET", "PAMPA_NCATS",                  "logPapp_PAMPA",    "none"),
-    # Plasma protein binding
-    ("ADMET", "PPBR_AZ",                      "PPBR_pct_unbound", "log1p"),
-    # Volume of distribution
-    ("ADMET", "VDss_Lombardo",                "VDss_Lombardo",    "none"),
-    # Half-life
-    ("ADMET", "Half_Life_Obach",              "HalfLife_h",       "none"),
-    # Clearance
-    ("ADMET", "Clearance_Hepatocyte_AZ",      "CLint_Hepato",     "none"),
-    ("ADMET", "Clearance_Microsome_AZ",       "CLint_Micro",      "none"),
-    # hERG
-    ("ADMET", "hERG",                         "hERG_pIC50",       "none"),
+    # Lipophilicity / logD — TDC provides already in log scale
+    ("ADME", "Lipophilicity_AstraZeneca",    "LogD_AZ",          "none"),
+    # Solubility — TDC provides already in log scale (logS)
+    ("ADME", "Solubility_AqSolDB",           "logS_AqSol",       "none"),
+    # Permeability — TDC provides already in log scale (log10 Papp)
+    ("ADME", "Caco2_Wang",                   "logPapp_Caco2",    "none"),
+    ("ADME", "PAMPA_NCATS",                  "logPapp_PAMPA",    "none"),
+    # Plasma protein binding — raw % (0–100); log1p compresses the right tail
+    ("ADME", "PPBR_AZ",                      "PPBR_pct_unbound", "log1p"),
+    # Volume of distribution — raw L/kg (0.01–800+); log-normal distribution
+    ("ADME", "VDss_Lombardo",                "VDss_Lombardo",    "log10"),
+    # Half-life — raw hours (1–10,000+); log-normal distribution
+    ("ADME", "Half_Life_Obach",              "HalfLife_h",       "log1p"),
+    # Clearance — raw mL/min/kg; can be near 0; log-normal distribution
+    ("ADME", "Clearance_Hepatocyte_AZ",      "CLint_Hepato",     "log1p"),
+    ("ADME", "Clearance_Microsome_AZ",       "CLint_Micro",      "log1p"),
+    # hERG — TDC provides as pIC50 (already log scale)
+    ("Tox",  "hERG",                         "hERG_pIC50",       "none"),
+    # Acute toxicity — TDC provides raw mol/kg; log10 to compress range
+    ("Tox",  "LD50_Zhu",                     "AcuteTox_LD50",    "log10"),
+]
+
+# Map transform hint → vectorised numpy function applied to the raw Y column.
+# All functions handle positive values; log1p is preferred when zeros are possible.
+_TRANSFORMS: dict[str, object] = {
+    "none":  None,
+    "log10": np.log10,
+    "log1p": np.log1p,
+}
+
+# ── TDC classification task registry ─────────────────────────────────────────
+# Each entry: (tdc_group, tdc_name, canonical_col_name)
+# All labels are binary (0/1).  No transforms needed.
+# Skipped (intentionally excluded):
+#   herg_central, hERG_Karim  — noisier binary versions of hERG (already covered
+#                                as regression in Stage-1a)
+#   ToxCast                   — very sparse & poorly curated; omit per ADMET-AI
+
+TDC_CLASSIFICATION_TASKS = [
+    # ── Absorption / Distribution ──────────────────────────────────────────────
+    ("ADME", "HIA_Hou",                        "HIA"),
+    ("ADME", "Pgp_Broccatelli",                "Pgp_Inhibitor"),
+    ("ADME", "Bioavailability_Ma",             "Bioavailability"),
+    ("ADME", "BBB_Martins",                    "BBB"),
+    # ── CYP enzyme inhibition ─────────────────────────────────────────────────
+    ("ADME", "CYP1A2_Veith",                   "CYP1A2_Inhibitor"),
+    ("ADME", "CYP2C9_Veith",                   "CYP2C9_Inhibitor"),
+    ("ADME", "CYP2C19_Veith",                  "CYP2C19_Inhibitor"),
+    ("ADME", "CYP2D6_Veith",                   "CYP2D6_Inhibitor"),
+    ("ADME", "CYP3A4_Veith",                   "CYP3A4_Inhibitor"),
+    # ── CYP enzyme substrate ──────────────────────────────────────────────────
+    ("ADME", "CYP2C9_Substrate_CarbonMangels", "CYP2C9_Substrate"),
+    ("ADME", "CYP2D6_Substrate_CarbonMangels", "CYP2D6_Substrate"),
+    ("ADME", "CYP3A4_Substrate_CarbonMangels", "CYP3A4_Substrate"),
+    # ── Toxicity ──────────────────────────────────────────────────────────────
+    ("Tox",  "AMES",                           "AMES_Mutagenicity"),
+    ("Tox",  "DILI",                           "DILI"),
+    ("Tox",  "Skin_Reaction",                  "Skin_Sensitizer"),
+    ("Tox",  "Carcinogens_Lagunin",            "Carcinogen"),
+    ("Tox",  "ClinTox",                        "ClinTox"),
+    # TODO: Tox21 (12 assay endpoints) requires multi-pred loading — add later.
 ]
 
 # MoleculeNet regression tasks (loaded via DeepChem or direct CSV)
@@ -105,27 +148,39 @@ def load_openadmet(cache_dir: str = "/data-1/cage-fusion-admet/datasets") -> tup
 def load_tdc_task(
     tdc_name: str,
     target_col: str,
+    tdc_group: str = "ADMET",
     cache_dir: str = "/data-1/cage-fusion-pretrain/datasets",
 ) -> Optional[pd.DataFrame]:
-    """Load a single TDC ADMET regression dataset.
+    """Load a single TDC regression dataset.
 
     Args:
         tdc_name:   TDC dataset name (e.g. ``"Lipophilicity_AstraZeneca"``).
         target_col: Name to assign to the target column in the returned DataFrame.
+        tdc_group:  TDC single-pred group, e.g. ``"ADME"`` or ``"Tox"``.
         cache_dir:  Local directory to cache downloaded datasets.
 
     Returns:
         DataFrame with columns ``["SMILES", target_col]``, or ``None`` on failure.
     """
     try:
-        from tdc.single_pred import ADMET
-    except ImportError:
+        import tdc.single_pred as tdc_sp
+    except ModuleNotFoundError as e:
+        if "pkg_resources" in str(e):
+            raise ImportError(
+                "PyTDC requires 'pkg_resources' (setuptools).  "
+                "Install with: uv pip install setuptools"
+            ) from e
         raise ImportError(
             "The 'PyTDC' package is required.  Install with: pip install PyTDC"
-        )
+        ) from e
+
+    loader_cls = getattr(tdc_sp, tdc_group, None)
+    if loader_cls is None:
+        logger.warning("Unknown TDC group '%s' for task '%s'", tdc_group, tdc_name)
+        return None
 
     try:
-        data = ADMET(name=tdc_name, path=cache_dir)
+        data = loader_cls(name=tdc_name, path=cache_dir)
         df   = data.get_data()
         # TDC returns columns: Drug, Drug_ID, Y
         df = df.rename(columns={"Drug": "SMILES", "Y": target_col})[["SMILES", target_col]]
@@ -215,9 +270,13 @@ def build_pretrain_dataset(
     frames: list[pd.DataFrame] = []
 
     # TDC datasets
-    for _, tdc_name, col_name, _ in TDC_ADMET_TASKS:
-        df = load_tdc_task(tdc_name, col_name, cache_dir=tdc_cache)
+    for tdc_group, tdc_name, col_name, transform in TDC_ADMET_TASKS:
+        df = load_tdc_task(tdc_name, col_name, tdc_group=tdc_group, cache_dir=tdc_cache)
         if df is not None:
+            fn = _TRANSFORMS.get(transform)
+            if fn is not None:
+                df[col_name] = fn(df[col_name].to_numpy(dtype=float))
+                logger.info("  %-25s  transform=%s applied", col_name, transform)
             frames.append(df)
 
     # MoleculeNet datasets
@@ -254,3 +313,60 @@ def build_pretrain_dataset(
 def get_pretrain_label_cols(df: pd.DataFrame) -> list[str]:
     """Return all endpoint columns (everything except SMILES) from a pretrain DataFrame."""
     return [c for c in df.columns if c != "SMILES"]
+
+
+def build_pretrain_classification_dataset(
+    tdc_cache: str = "/data-1/cage-fusion-pretrain/datasets",
+    output_csv: str = "/data-1/cage-fusion-pretrain/datasets/pretrain_classification_merged.csv",
+) -> pd.DataFrame:
+    """Fetch all TDC binary classification ADMET datasets and merge into a wide DataFrame.
+
+    Each row is one unique SMILES string.  Label columns contain 0/1; rows not
+    measured for a given endpoint have ``NaN`` — handled by the masked BCE loss.
+
+    Covers 17 endpoints across absorption, distribution, CYP metabolism, and
+    toxicity.  Tox21 (12 assays) is excluded pending multi-pred loader support.
+
+    Args:
+        tdc_cache:  Directory for TDC downloads.
+        output_csv: Path to save the merged CSV.
+
+    Returns:
+        Wide DataFrame with columns ``["SMILES", task_1, ..., task_N]``.
+    """
+    import os
+    os.makedirs(tdc_cache, exist_ok=True)
+
+    frames: list[pd.DataFrame] = []
+
+    for tdc_group, tdc_name, col_name in TDC_CLASSIFICATION_TASKS:
+        df = load_tdc_task(tdc_name, col_name, tdc_group=tdc_group, cache_dir=tdc_cache)
+        if df is not None:
+            # Coerce labels to {0, 1, NaN} — some TDC datasets may have floats
+            df[col_name] = pd.to_numeric(df[col_name], errors="coerce")
+            frames.append(df)
+
+    if not frames:
+        raise RuntimeError("No classification datasets could be loaded.")
+
+    merged = frames[0]
+    for df in frames[1:]:
+        merged = pd.merge(merged, df, on="SMILES", how="outer")
+
+    merged = merged.drop_duplicates(subset=["SMILES"]).reset_index(drop=True)
+
+    label_cols = [c for c in merged.columns if c != "SMILES"]
+    coverage = 100 * merged[label_cols].notna().mean().mean()
+    logger.info(
+        "Classification pretrain dataset: %d unique molecules, %d endpoints, %.1f%% coverage",
+        len(merged), len(label_cols), coverage,
+    )
+    for col in label_cols:
+        n = merged[col].notna().sum()
+        pos = merged[col].eq(1).sum()
+        logger.info("  %-28s  n=%5d  pos_rate=%.1f%%", col, n, 100 * pos / max(n, 1))
+
+    os.makedirs(os.path.dirname(output_csv), exist_ok=True)
+    merged.to_csv(output_csv, index=False)
+    logger.info("Saved classification pretrain dataset to %s", output_csv)
+    return merged

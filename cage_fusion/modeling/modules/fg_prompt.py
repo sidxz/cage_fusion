@@ -16,8 +16,25 @@ from __future__ import annotations
 
 import torch
 import torch.nn as nn
-from rdkit import Chem
+from rdkit import Chem, RDLogger
 from typing import List, Tuple, Optional
+
+_rdlog = RDLogger.logger()
+
+
+def _mol_from_smiles_quiet(smiles: str):
+    """Parse SMILES while suppressing RDKit sanitisation warnings.
+
+    SMILES arriving here were already validated during featurisation, so any
+    remaining warnings (e.g. 'not removing hydrogen atom without neighbors')
+    are cosmetic and should not pollute training logs.
+    """
+    _rdlog.setLevel(RDLogger.CRITICAL)
+    try:
+        mol = Chem.MolFromSmiles(smiles)
+    finally:
+        _rdlog.setLevel(RDLogger.WARNING)
+    return mol
 
 
 class FunctionalGroupPrompt(nn.Module):
@@ -91,7 +108,7 @@ class FunctionalGroupPrompt(nn.Module):
 
         for i, smiles in enumerate(smiles_batch):
             try:
-                mol = Chem.MolFromSmiles(smiles)
+                mol = _mol_from_smiles_quiet(smiles)
                 if mol is None:
                     batch_prompts.append(
                         torch.zeros(1, self.feature_dim, device=device)

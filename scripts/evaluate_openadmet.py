@@ -27,20 +27,17 @@ from __future__ import annotations
 import argparse
 import logging
 import os
-import sys
 
 import numpy as np
 import pandas as pd
 import torch
 
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
-
 from cage_fusion import AutoCageFusion
 from cage_fusion.data import CageFusionDataModule
 from cage_fusion.utils.device_utils import move_bmg_to_device
-from benchmarks.openadmet.data_loader import load_openadmet, OPENADMET_LABEL_COLS
-from benchmarks.openadmet.preprocessing import forward_transform, inverse_transform
-from benchmarks.openadmet.marae import compute_marae, print_report
+from cage_fusion.benchmarks.openadmet.data_loader import load_openadmet, OPENADMET_LABEL_COLS
+from cage_fusion.benchmarks.openadmet.preprocessing import forward_transform, inverse_transform
+from cage_fusion.benchmarks.openadmet.marae import compute_marae, print_report
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("evaluate_openadmet")

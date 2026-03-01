@@ -34,7 +34,9 @@ logger = logging.getLogger("cagefusion")
 
 
 def _to_numpy(data):
-    return data.detach().cpu().numpy() if isinstance(data, torch.Tensor) else np.asarray(data)
+    if isinstance(data, torch.Tensor):
+        return data.detach().float().cpu().numpy()  # float() handles BFloat16 → float32
+    return np.asarray(data)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -52,8 +54,10 @@ class AUCAccumulator:
         labels = _to_numpy(labels_batch)
         probs = _to_numpy(probs_batch)
         for i in range(self.num_tasks):
-            self._labels[i].extend(labels[:, i].tolist())
-            self._probs[i].extend(probs[:, i].tolist())
+            col = labels[:, i]
+            valid = ~np.isnan(col)
+            self._labels[i].extend(col[valid].tolist())
+            self._probs[i].extend(probs[valid, i].tolist())
 
     def compute(self, reduce="mean"):
         aucs = []
@@ -92,8 +96,10 @@ class MCCAccumulator:
         labels = _to_numpy(labels_batch)
         probs = _to_numpy(probs_batch)
         for i in range(self.num_tasks):
-            self._labels[i].extend(labels[:, i].tolist())
-            self._probs[i].extend(probs[:, i].tolist())
+            col = labels[:, i]
+            valid = ~np.isnan(col)
+            self._labels[i].extend(col[valid].tolist())
+            self._probs[i].extend(probs[valid, i].tolist())
 
     def compute(
         self,
@@ -160,8 +166,10 @@ class PRAccumulator:
         labels = _to_numpy(labels_batch)
         probs = _to_numpy(probs_batch)
         for i in range(self.num_tasks):
-            self._labels[i].extend(labels[:, i].tolist())
-            self._probs[i].extend(probs[:, i].tolist())
+            col = labels[:, i]
+            valid = ~np.isnan(col)
+            self._labels[i].extend(col[valid].tolist())
+            self._probs[i].extend(probs[valid, i].tolist())
 
     def compute(self, reduce="mean"):
         pr_aucs = []
@@ -216,8 +224,11 @@ class RegressionAccumulator:
         """
         rmses, maes, r2s = [], [], []
         for i in range(self.num_tasks):
-            t = np.array(self._targets[i])
-            p = np.array(self._preds[i])
+            t = np.array(self._targets[i], dtype=float)
+            p = np.array(self._preds[i],   dtype=float)
+            # Mask out NaN targets (missing measurements in sparse multi-task setting)
+            mask = ~np.isnan(t)
+            t, p = t[mask], p[mask]
             if len(t) == 0:
                 rmses.append(float("nan"))
                 maes.append(float("nan"))

@@ -162,7 +162,10 @@ def featurize_and_save_streaming(
         for i in tqdm(range(0, N, batch_size), desc=f"Featurising {name}"):
             batch_df = df.iloc[i : i + batch_size]
             bs = len(batch_df)
-            smiles_batch = batch_df["SMILES"].tolist()
+            # Use RDKit canonical SMILES (mol objects already parsed & validated).
+            # This eliminates "not removing hydrogen atom without neighbors" warnings
+            # at training time and ensures ChemBERTa sees its native canonical form.
+            smiles_batch = [Chem.MolToSmiles(mol) for mol in batch_df["mol"]]
             orig_idx_batch = batch_df["original_index"].tolist()
             ids_batch = batch_df[id_col].astype(str).tolist() if has_ids else None
 

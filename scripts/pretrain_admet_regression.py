@@ -1,30 +1,32 @@
 #!/usr/bin/env python
 """
-scripts/pretrain_admet.py
-==========================
-Stage 1 — Broad ADMET pretraining on TDC + MoleculeNet datasets.
+scripts/pretrain_admet_regression.py
+=====================================
+Stage 2 — Broad ADMET regression pretraining on TDC + MoleculeNet datasets.
+
+Run AFTER Stage-1 classification pretraining.  Warm-starts from the
+classification backbone (recommended) via --init-from-backbone.
 
 Trains CAGEFusionForRegression on ~28k molecules across ~13 endpoints using
 masked MSE (NaN targets are ignored per-task).  The pretrained backbone is
-saved to /data-1/cage-fusion-pretrain/checkpoints/ and can be loaded with
-strict=False for any downstream fine-tuning task.
+saved to /data-1/cage-fusion-pretrain/regression/checkpoints/ and can be
+loaded with strict=False for any downstream fine-tuning task.
 
 Usage
 -----
-    python scripts/pretrain_admet.py
+    # Recommended: warm-start from Stage-1 classification backbone
+    uv run python scripts/pretrain_admet_regression.py \\
+        --init-from-backbone /data-1/cage-fusion-pretrain/classification/checkpoints/backbone.bin
 
-    # Custom options:
-    python scripts/pretrain_admet.py \\
-        --epochs 150 \\
-        --batch-size 64 \\
-        --lr 3e-4 \\
-        --seed 42
+    # From scratch (not recommended):
+    uv run python scripts/pretrain_admet_regression.py
 
     # Skip dataset download if already cached:
-    python scripts/pretrain_admet.py --skip-download
+    uv run python scripts/pretrain_admet_regression.py --skip-download \\
+        --init-from-backbone /data-1/cage-fusion-pretrain/classification/checkpoints/backbone.bin
 
-Output (all under /data-1/cage-fusion-pretrain/)
------------
+Output (all under /data-1/cage-fusion-pretrain/regression/)
+------------------------------------------------------------
     checkpoints/
         best_model.pt          ← best val RMSE checkpoint (full .pt)
         pytorch_model.bin      ← HF-format weights (backbone + head)
@@ -44,17 +46,13 @@ from __future__ import annotations
 import argparse
 import logging
 import os
-import sys
 
 import torch
-
-# ── Make sure the project root is on PYTHONPATH ──────────────────────────────
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 from cage_fusion import AutoCageFusion, CageFusionConfig
 from cage_fusion.data import CageFusionDataModule
 from cage_fusion.training import Trainer, TrainingArguments
-from benchmarks.openadmet.data_loader import (
+from cage_fusion.benchmarks.openadmet.data_loader import (
     build_pretrain_dataset,
     get_pretrain_label_cols,
 )
@@ -62,9 +60,103 @@ from benchmarks.openadmet.data_loader import (
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("pretrain_admet")
 
+
+# ── Checkpoint load report ────────────────────────────────────────────────────
+
+_SUBMODULE_LABELS = {
+    "graph_encoder":  "Graph encoder (D-MPNN)",
+    "graph_proj":     "Graph projection",
+    "embedding_proj": "Sequence projection (ChemBERTa)",
+    "both_proj":      "Self-attn both projection",
+    "co_attn_layers": "Co-attention layers",
+    "aux_mlp":        "Auxiliary feature MLP",
+    "fg_prompter":    "Functional group prompt",
+    "fusion":         "Fusion MLP",
+    "scale_graph":    "Scale params (graph/attn/aux/fg)",
+    "scale_attn":     "(merged above)",
+    "scale_aux":      "(merged above)",
+    "alpha":          "(merged above)",
+}
+_SCALE_GROUP = {"scale_graph", "scale_attn", "scale_aux", "alpha"}
+
+
+def _print_checkpoint_report(
+    state: dict, missing: list, unexpected: list, model,
+    shape_skipped: list | None = None,
+) -> None:
+    """Print a rich table showing which components were loaded from checkpoint."""
+    from rich import box as rich_box
+    from rich.console import Console
+    from rich.table import Table
+
+    # Group loaded params by submodule (keys are "encoder.<sub>.<rest>")
+    loaded: dict[str, int] = {}
+    scale_params = 0
+    for k, v in state.items():
+        parts = k.split(".")
+        sub = parts[1] if len(parts) > 1 else parts[0]
+        if sub in _SCALE_GROUP:
+            scale_params += v.numel()
+        else:
+            loaded.setdefault(sub, 0)
+            loaded[sub] += v.numel()
+    if scale_params:
+        loaded["scale_graph"] = scale_params
+
+    # Group freshly-initialised params (missing keys + shape-skipped keys)
+    fresh: dict[str, int] = {}
+    model_sd = model.state_dict()
+    for k in list(missing) + list(shape_skipped or []):
+        sub = k.split(".")[0]
+        fresh.setdefault(sub, 0)
+        if k in model_sd:
+            fresh[sub] += model_sd[k].numel()
+
+    total_loaded = sum(loaded.values())
+    total_fresh  = sum(fresh.values())
+
+    console = Console()
+    table = Table(
+        title="[bold cyan]Pretrained Encoder Weights — Load Report[/bold cyan]",
+        box=rich_box.ROUNDED,
+        border_style="cyan",
+        header_style="bold",
+        show_header=True,
+    )
+    table.add_column("Component",  min_width=36)
+    table.add_column("Source",     justify="center", min_width=22)
+    table.add_column("Parameters", justify="right",  min_width=12)
+
+    for sub, n in sorted(loaded.items()):
+        if _SUBMODULE_LABELS.get(sub) == "(merged above)":
+            continue
+        label = _SUBMODULE_LABELS.get(sub, sub)
+        table.add_row(label, "[green]checkpoint[/green]", f"{n:,}")
+
+    for sub, n in sorted(fresh.items()):
+        table.add_row(sub, "[yellow]fresh init[/yellow]", f"{n:,}")
+
+    for k in unexpected:
+        table.add_row(k, "[red]unexpected / skipped[/red]", "—")
+
+    if shape_skipped:
+        table.add_row(
+            f"[dim]{len(shape_skipped)} shape-mismatched keys[/dim]",
+            "[dim]re-initialized[/dim]", "—",
+        )
+
+    table.add_section()
+    table.add_row("[bold]Total from checkpoint[/bold]", "", f"[green]{total_loaded:,}[/green]")
+    table.add_row("[bold]Total fresh init[/bold]",      "", f"[yellow]{total_fresh:,}[/yellow]")
+
+    console.print()
+    console.print(table)
+    console.print()
+
+
 # ── Directories ───────────────────────────────────────────────────────────────
 
-ROOT          = "/data-1/cage-fusion-pretrain"
+ROOT          = "/data-1/cage-fusion-pretrain/regression"
 DATASET_DIR   = os.path.join(ROOT, "datasets")
 CHECKPOINT_DIR = os.path.join(ROOT, "checkpoints")
 FEATURE_DIR   = os.path.join(ROOT, "features")
@@ -102,15 +194,21 @@ def build_config(num_labels: int, label_names: list[str]) -> CageFusionConfig:
 
 def parse_args():
     p = argparse.ArgumentParser(description="CAGEFusion broad ADMET pretraining")
-    p.add_argument("--epochs",        type=int,   default=100)
+    p.add_argument("--epochs",        type=int,   default=30)
     p.add_argument("--batch-size",    type=int,   default=64)
     p.add_argument("--lr",            type=float, default=3e-4)
     p.add_argument("--weight-decay",  type=float, default=1e-4)
     p.add_argument("--val-split",     type=float, default=0.15)
     p.add_argument("--seed",          type=int,   default=42)
     p.add_argument("--num-workers",   type=int,   default=4)
+    p.add_argument("--bf16",          action="store_true",
+                   help="Enable BF16 autocast (recommended on A6000 Ada / Ampere+).")
     p.add_argument("--skip-download", action="store_true",
                    help="Use cached pretrain_merged.csv if it exists.")
+    p.add_argument("--skip-featurize", action="store_true",
+                   help="Skip ChemBERTa featurisation if HDF5 caches already exist.")
+    p.add_argument("--init-from-backbone", type=str, default=None,
+                   help="Path to backbone.bin from Stage-1 classification to initialise the encoder.")
     p.add_argument("--push-to-hub",   action="store_true",
                    help="Push best checkpoint to cage-fusion/cage-fusion-pretrained.")
     p.add_argument("--hf-token",      type=str,   default=None)
@@ -158,6 +256,7 @@ def main():
         cache_dir=FEATURE_DIR,
         batch_size=args.batch_size,
         num_workers=args.num_workers,
+        skip_featurize=args.skip_featurize,
     )
 
     # ── 3. Build model ────────────────────────────────────────────────────────
@@ -166,6 +265,27 @@ def main():
 
     config = build_config(len(label_cols), label_cols)
     model  = AutoCageFusion.from_config(config).to(device)
+
+    # Optionally warm-start encoder from a prior pretraining checkpoint
+    if args.init_from_backbone:
+        if os.path.isfile(args.init_from_backbone):
+            state = torch.load(args.init_from_backbone, map_location="cpu")
+            # Filter shape-mismatched keys (e.g. graph encoder's task-specific
+            # predictor head, which is sized by num_labels in the source task)
+            model_sd = model.state_dict()
+            shape_skipped = [
+                k for k, v in state.items()
+                if k in model_sd and v.shape != model_sd[k].shape
+            ]
+            compatible = {
+                k: v for k, v in state.items()
+                if k not in shape_skipped
+            }
+            missing, unexpected = model.load_state_dict(compatible, strict=False)
+            _print_checkpoint_report(compatible, missing, unexpected, model,
+                                     shape_skipped=shape_skipped)
+        else:
+            logger.warning("--init-from-backbone path not found: %s", args.init_from_backbone)
 
     total     = sum(p.numel() for p in model.parameters())
     trainable = sum(p.numel() for p in model.parameters() if p.requires_grad)
@@ -185,6 +305,7 @@ def main():
         seed=args.seed,
         primary_metric="rmse",
         primary_metric_direction="min",
+        bf16=args.bf16,
     )
     train_args.save(CHECKPOINT_DIR)
 
