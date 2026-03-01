@@ -52,6 +52,17 @@ class TrainingArguments:
     # ── Checkpoint / resume ───────────────────────────────────────────────
     resume_with_new_arch: bool = False
 
+    # ── Checkpoint metric ─────────────────────────────────────────────────
+    primary_metric: str = "rmse"
+    """Metric used to select ``best_model.pt``.
+    Regression options : ``"rmse"`` | ``"mae"`` | ``"r2"`` | ``"marae"``
+    Classification options: ``"auc"`` | ``"mcc"`` | ``"pr"``
+    """
+    primary_metric_direction: str = "min"
+    """``"min"`` if lower is better (rmse, mae, marae);
+    ``"max"`` if higher is better (r2, auc, mcc, pr).
+    """
+
     # ── Misc ─────────────────────────────────────────────────────────────
     seed: int = 42
 

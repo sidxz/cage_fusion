@@ -172,6 +172,74 @@ class CAGEFusionPreTrainedModel(nn.Module):
             )
         return model
 
+    # ── Transfer-learning helpers ─────────────────────────────────────────────
+
+    #: Parameter name prefixes that belong to the task head, not the backbone.
+    _HEAD_PREFIXES: tuple = ("classifier.", "regressor.")
+
+    def freeze_backbone(self) -> None:
+        """Freeze all encoder weights; leave only the task head trainable.
+
+        Use this during the head-warmup phase of fine-tuning so the pretrained
+        backbone is not disturbed before the new head has stabilised.
+
+        Example::
+
+            model = CAGEFusionForRegression.from_pretrained(
+                "cage-fusion/cage-fusion-pretrained",
+                config=finetune_config, strict=False,
+            )
+            model.freeze_backbone()   # only regressor.weight / .bias trainable
+            trainer.train()           # phase A
+            model.unfreeze_backbone() # phase B — full fine-tuning
+        """
+        frozen = 0
+        for name, param in self.named_parameters():
+            if not any(name.startswith(p) for p in self._HEAD_PREFIXES):
+                param.requires_grad_(False)
+                frozen += 1
+        logger.info("freeze_backbone: froze %d parameter tensors.", frozen)
+
+    def unfreeze_backbone(self) -> None:
+        """Re-enable gradients for all parameters (backbone + head)."""
+        for param in self.parameters():
+            param.requires_grad_(True)
+        logger.info("unfreeze_backbone: all parameters trainable.")
+
+    def save_backbone(self, save_directory: str) -> None:
+        """Save only encoder weights (no task head) as ``backbone.bin``.
+
+        Safe to load into any task head variant via
+        ``from_pretrained(..., strict=False)``.  Also saves ``config.json``
+        so the backbone width / architecture is recorded alongside the weights.
+
+        Args:
+            save_directory: Local path. Created if it does not exist.
+
+        Example::
+
+            model.save_backbone("/data-1/cage-fusion-pretrain/checkpoints/best/")
+            # produces: backbone.bin  +  config.json
+
+            # Fine-tune on a different task later:
+            new_model = CAGEFusionForMultiLabelClassification.from_pretrained(
+                "/data-1/cage-fusion-pretrain/checkpoints/best/",
+                config=CageFusionConfig(num_labels=4, model_task="classification", ...),
+                strict=False,   # head key mismatch is expected
+            )
+        """
+        os.makedirs(save_directory, exist_ok=True)
+        backbone_state = {
+            k: v for k, v in self.state_dict().items()
+            if not any(k.startswith(p) for p in self._HEAD_PREFIXES)
+        }
+        torch.save(backbone_state, os.path.join(save_directory, "backbone.bin"))
+        self.config.save_pretrained(save_directory)
+        logger.info(
+            "Saved backbone (%d tensors) to %s",
+            len(backbone_state), save_directory,
+        )
+
     @classmethod
     def from_checkpoint(
         cls,
@@ -735,8 +803,16 @@ class CAGEFusionForRegression(CAGEFusionPreTrainedModel):
         predictions = self.regressor(enc.hidden_states)
         loss        = None
         if labels is not None:
+            # Masked MSE — supports NaN targets (sparse multi-task labels).
+            # Only positions where the label is finite contribute to the loss.
+            mask = ~torch.isnan(labels)
+            if mask.any():
+                diff = (predictions - labels.nan_to_num(0.0)) ** 2
+                mse  = (diff * mask).sum() / mask.sum().clamp(min=1)
+            else:
+                mse  = predictions.sum() * 0.0   # no valid targets in batch
             loss = (
-                nn.MSELoss()(predictions, labels)
+                mse
                 + lambda_entropy * enc.attn_entropy_loss
                 + lambda_prior   * enc.token_prior_loss
             )

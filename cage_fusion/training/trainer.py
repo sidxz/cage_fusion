@@ -26,6 +26,7 @@ from tqdm import tqdm
 
 from cage_fusion.training.metrics import (
     AUCAccumulator,
+    MARAEAccumulator,
     MCCAccumulator,
     PRAccumulator,
     RegressionAccumulator,
@@ -180,13 +181,14 @@ class Trainer:
         best_mcc_path = os.path.join(args.checkpoints_dir, "best_model_mcc.pt")
 
         start_epoch = 1
-        # For regression: lower RMSE / MAE is better (start at +inf).
-        # For classification: higher AUC / MCC is better (start at -1).
+        # Initialise best-metric trackers from TrainingArguments.
+        # primary_metric_direction "min" → start at +inf; "max" → start at -inf.
+        _dir = args.primary_metric_direction
+        best_primary   = float("inf")  if _dir == "min" else -float("inf")
+        # Secondary metric keeps the old defaults for backward compat.
         if self.task == "regression":
-            best_primary   = float("inf")   # RMSE
             best_secondary = float("inf")   # MAE
         else:
-            best_primary   = -1.0           # AUC
             best_secondary = -1.0           # MCC
         history = self._empty_history()
 
@@ -216,16 +218,25 @@ class Trainer:
             ckpt = self._make_checkpoint(epoch, history, best_primary, best_secondary, val_metrics)
             torch.save(ckpt, checkpoint_path)
 
-            if self.task == "regression":
-                p_val, s_val       = val_metrics["rmse"], val_metrics["mae"]
-                p_improved         = p_val < best_primary
-                s_improved         = s_val < best_secondary
-                p_label, s_label   = "RMSE", "MAE"
+            # Primary metric — driven by args.primary_metric + direction.
+            p_key   = args.primary_metric
+            p_val   = val_metrics.get(p_key, float("nan"))
+            p_dir   = args.primary_metric_direction
+            p_label = p_key.upper()
+            if p_dir == "min":
+                p_improved = p_val < best_primary
             else:
-                p_val, s_val       = val_metrics["auc"], val_metrics["mcc"]
-                p_improved         = p_val > best_primary
-                s_improved         = s_val > best_secondary
-                p_label, s_label   = "AUC", "MCC"
+                p_improved = p_val > best_primary
+
+            # Secondary metric keeps old defaults.
+            if self.task == "regression":
+                s_val      = val_metrics["mae"]
+                s_improved = s_val < best_secondary
+                s_label    = "MAE"
+            else:
+                s_val      = val_metrics["mcc"]
+                s_improved = s_val > best_secondary
+                s_label    = "MCC"
 
             if p_improved:
                 best_primary = p_val
@@ -360,7 +371,8 @@ class Trainer:
         num_tasks = getattr(getattr(model, "config", None), "num_labels", 1)
 
         if self.task == "regression":
-            reg_agg = RegressionAccumulator(num_tasks, self.label_names)
+            reg_agg   = RegressionAccumulator(num_tasks, self.label_names)
+            marae_agg = MARAEAccumulator(num_tasks, self.label_names)
         else:
             mcc_agg = MCCAccumulator(num_tasks, self.label_names)
             auc_agg = AUCAccumulator(num_tasks, self.label_names)
@@ -403,6 +415,7 @@ class Trainer:
             preds = output.logits
             if self.task == "regression":
                 reg_agg.update(labels, preds)
+                marae_agg.update(labels, preds)
             else:
                 probs = torch.sigmoid(preds)
                 mcc_agg.update(labels, probs)
@@ -418,14 +431,16 @@ class Trainer:
         }
 
         if self.task == "regression":
-            avg_rmse, avg_mae, avg_r2          = reg_agg.compute()
-            pt_rmse, pt_mae, pt_r2             = reg_agg.compute(reduce="none")
+            avg_rmse, avg_mae, avg_r2 = reg_agg.compute()
+            pt_rmse, pt_mae, pt_r2   = reg_agg.compute(reduce="none")
+            avg_marae, _             = marae_agg.compute()
             logger.info(
-                "Epoch val | loss=%.4f rmse=%.4f mae=%.4f r2=%.4f",
-                avg_loss, avg_rmse, avg_mae, avg_r2,
+                "Epoch val | loss=%.4f rmse=%.4f mae=%.4f r2=%.4f marae=%.4f",
+                avg_loss, avg_rmse, avg_mae, avg_r2, avg_marae,
             )
             return {
                 "loss": avg_loss, "rmse": avg_rmse, "mae": avg_mae, "r2": avg_r2,
+                "marae": avg_marae,
                 "per_task": list(zip(pt_rmse.tolist(), pt_mae.tolist(), pt_r2.tolist())),
                 **norms,
             }
@@ -529,7 +544,12 @@ class Trainer:
             "val_norm_graph", "val_norm_attn", "val_norm_aux",
         ]
         if self.task == "regression":
-            task_keys = ["train_rmse", "val_rmse", "train_mae", "val_mae", "train_r2", "val_r2"]
+            task_keys = [
+                "train_rmse", "val_rmse",
+                "train_mae",  "val_mae",
+                "train_r2",   "val_r2",
+                "train_marae","val_marae",
+            ]
         else:
             task_keys = ["train_mcc", "val_mcc", "train_auc", "val_auc", "train_pr", "val_pr"]
         return {k: [] for k in common + task_keys}
@@ -558,16 +578,17 @@ class Trainer:
                         state[k] = v.to(self.device)
         history = ckpt.get("history", self._empty_history())
         start_epoch = ckpt.get("epoch", 0) + 1
+        _dir = self.args.primary_metric_direction
+        _default_primary = float("inf") if _dir == "min" else -float("inf")
+        best_primary   = ckpt.get("best_primary", _default_primary)
         if self.task == "regression":
-            best_primary   = ckpt.get("best_primary",   float("inf"))
             best_secondary = ckpt.get("best_secondary", float("inf"))
         else:
-            best_primary   = ckpt.get("best_primary",   ckpt.get("best_val_auc", -1.0))
             best_secondary = ckpt.get("best_secondary", ckpt.get("best_val_mcc", -1.0))
         return start_epoch, best_primary, best_secondary, history
 
     def _update_history(self, history: dict, train: dict, val: dict):
-        metrics = ("loss", "rmse", "mae", "r2") if self.task == "regression" \
+        metrics = ("loss", "rmse", "mae", "r2", "marae") if self.task == "regression" \
                   else ("loss", "mcc", "auc", "pr")
         for metric in metrics:
             history[f"train_{metric}"].append(train[metric])

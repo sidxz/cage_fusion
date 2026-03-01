@@ -11,6 +11,7 @@ AUCAccumulator        – ROC-AUC per task          (classification)
 PRAccumulator         – PR-AUC per task            (classification)
 MCCAccumulator        – MCC with threshold search  (classification)
 RegressionAccumulator – RMSE / MAE / R² per task  (regression)
+MARAEAccumulator      – MA-RAE per task            (regression, OpenADMET leaderboard metric)
 """
 
 from __future__ import annotations
@@ -247,4 +248,86 @@ class RegressionAccumulator:
 
     def reset(self):
         self._preds = [[] for _ in range(self.num_tasks)]
+        self._targets = [[] for _ in range(self.num_tasks)]
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# MA-RAE  (OpenADMET leaderboard metric)
+# ─────────────────────────────────────────────────────────────────────────────
+
+class MARAEAccumulator:
+    """
+    Macro-Averaged Relative Absolute Error — matches the OpenADMET leaderboard
+    scoring formula.
+
+    Per-endpoint RAE::
+
+        RAE_i = MAE_i / mean(|y_true_i − mean(y_true_i)|)
+
+    MA-RAE is the mean of RAE_i across all tasks that have ≥ 2 valid (non-NaN)
+    samples.  NaN targets are masked per-task, making this safe for sparse
+    multi-task labels.
+
+    Expected inputs
+    ---------------
+    Both ``targets_batch`` and ``preds_batch`` should be in the **same scale
+    as training** (i.e. log-transformed if that was applied before training).
+    Do *not* inverse-transform before computing MA-RAE.
+    """
+
+    def __init__(self, num_tasks: int, label_names=None):
+        self.num_tasks  = num_tasks
+        self.label_names = label_names or [f"Task {i}" for i in range(num_tasks)]
+        self._preds:   List[list] = [[] for _ in range(num_tasks)]
+        self._targets: List[list] = [[] for _ in range(num_tasks)]
+
+    def update(self, targets_batch, preds_batch):
+        """Accumulate one batch.  NaN targets are stored as NaN and masked at
+        ``compute()`` time."""
+        targets = _to_numpy(targets_batch)
+        preds   = _to_numpy(preds_batch)
+        for i in range(self.num_tasks):
+            self._targets[i].extend(targets[:, i].tolist())
+            self._preds[i].extend(preds[:, i].tolist())
+
+    def compute(self, reduce: str = "mean"):
+        """
+        Compute MA-RAE.
+
+        Args:
+            reduce: ``"mean"`` → returns ``(ma_rae_float, per_task_rae_list)``.
+                    ``"none"`` → returns only ``per_task_rae_list`` (np.ndarray,
+                    NaN for tasks with < 2 valid samples).
+
+        Returns:
+            ``(ma_rae, per_task_raes)`` when ``reduce="mean"``, or
+            ``per_task_raes`` array when ``reduce="none"``.
+        """
+        raes = []
+        for i in range(self.num_tasks):
+            t = np.array(self._targets[i], dtype=float)
+            p = np.array(self._preds[i],   dtype=float)
+            # mask NaN targets
+            mask = ~np.isnan(t)
+            t, p = t[mask], p[mask]
+            if len(t) < 2:
+                raes.append(float("nan"))
+                continue
+            try:
+                mae        = float(mean_absolute_error(t, p))
+                denominator = float(np.mean(np.abs(t - np.mean(t))))
+                rae        = mae / denominator if denominator > 1e-12 else float("nan")
+            except Exception as e:
+                logger.warning("MA-RAE failed for task %d (%s): %s", i, self.label_names[i], e)
+                rae = float("nan")
+            raes.append(rae)
+
+        raes_np = np.array(raes)
+        if reduce == "none":
+            return raes_np
+        ma_rae = float(np.nanmean(raes_np))
+        return ma_rae, raes
+
+    def reset(self):
+        self._preds   = [[] for _ in range(self.num_tasks)]
         self._targets = [[] for _ in range(self.num_tasks)]
