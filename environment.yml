@@ -35,5 +35,6 @@ dependencies:
 
   - pip
   - pip:
-      - chemprop>=2.2.0
+      - chemprop==2.2.2
+      - lightning==2.2.5
       - hf_transfer
