@@ -12,6 +12,9 @@ WORKDIR /home/${MAMBA_USER}
 # Install micromamba
 RUN curl -L https://micro.mamba.pm/api/micromamba/linux-64/latest | tar -xvj bin/micromamba
 
+ENV PIP_INDEX_URL=https://pypi.org/simple
+ENV PIP_EXTRA_INDEX_URL=
+ENV PIP_TRUSTED_HOST=
 ENV MAMBA_ROOT_PREFIX=/home/${MAMBA_USER}/mamba
 ENV PATH=/home/${MAMBA_USER}/bin:$PATH
 ENV MAMBA_DOCKERFILE_ACTIVATE=1

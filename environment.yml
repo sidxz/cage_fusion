@@ -35,5 +35,7 @@ dependencies:
 
   - pip
   - pip:
+      - --index-url=https://pypi.org/simple
       - chemprop>=2.2.0
+      - lightning>=2.6.0
       - hf_transfer
